@@ -1,13 +1,5 @@
-import { Bell, ShieldCheck, LogOut, Menu, Sun, Moon } from "lucide-react";
-import { Button } from "./ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
+import { type ReactNode, useState } from "react";
+import { Bell, LogOut, Menu, Moon, Settings, ShieldCheck, Sun } from "lucide-react";
 
 interface AdminNavbarProps {
   onLogout?: () => void;
@@ -19,6 +11,12 @@ interface AdminNavbarProps {
   userEmail?: string;
 }
 
+const NOTIFICATIONS = [
+  "Analytics data sync completed.",
+  "Movie catalog is ready for review.",
+  "Admin workspace is using the latest UI version.",
+];
+
 export function AdminNavbar({
   onLogout,
   onToggleSidebar,
@@ -28,116 +26,506 @@ export function AdminNavbar({
   userName = "Admin",
   userEmail = "admin@moviebuzz.com",
 }: AdminNavbarProps) {
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+
   const displayName = userName.trim() || "Admin";
   const displayEmail = userEmail.trim() || "admin@moviebuzz.com";
+  const initials = displayName
+    .split(" ")
+    .map((word) => word[0] ?? "")
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  const bg = darkMode ? "#18181b" : "#ffffff";
+  const border = darkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid #e4e4e7";
+  const text = darkMode ? "#f4f4f5" : "#09090b";
+  const subtext = "#71717a";
+  const hoverBg = darkMode ? "rgba(255,255,255,0.06)" : "#f4f4f5";
+  const divider = darkMode ? "rgba(255,255,255,0.08)" : "#e4e4e7";
 
   return (
-    <nav className="sticky top-0 z-50 h-16 border-b border-zinc-200 bg-white shadow-sm transition-colors dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-center justify-between h-full px-6">
-
-        {/* LEFT: Logo + Menu toggle */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-0.5 select-none">
-            <span className="text-xl font-black italic tracking-tight bg-gradient-to-r from-red-600 to-red-400 bg-clip-text text-transparent leading-none">
+    <nav
+      style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 50,
+        height: "64px",
+        backgroundColor: bg,
+        borderBottom: border,
+        boxShadow: darkMode
+          ? "0 1px 0 rgba(255,255,255,0.04)"
+          : "0 1px 3px rgba(0,0,0,0.06)",
+        transition: "background-color 0.3s, border-color 0.3s",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "0 24px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", userSelect: "none" }}>
+          <img
+            src="/favicon.svg"
+            alt="MovieBuzz"
+            width={36}
+            height={36}
+            style={{
+              borderRadius: "10px",
+              border: darkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid #e4e4e7",
+              backgroundColor: darkMode ? "rgba(0,0,0,0.4)" : "#f9f9f9",
+              objectFit: "cover",
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "baseline", gap: "1px" }}>
+            <span
+              style={{
+                fontSize: "18px",
+                fontWeight: 900,
+                fontStyle: "italic",
+                letterSpacing: "-0.02em",
+                background: "linear-gradient(135deg, #dc2626, #f87171)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+                lineHeight: 1,
+              }}
+            >
               MOVIE
             </span>
-            <span className="text-xl font-black italic tracking-tight text-zinc-900 dark:text-white leading-none">
+            <span
+              style={{
+                fontSize: "18px",
+                fontWeight: 900,
+                fontStyle: "italic",
+                letterSpacing: "-0.02em",
+                color: text,
+                lineHeight: 1,
+              }}
+            >
               BUZZ
             </span>
           </div>
-          <button
-            onClick={onToggleSidebar}
-            aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
-            aria-pressed={isSidebarOpen}
-            className="rounded-lg p-1.5 text-zinc-500 transition-all duration-300 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-white"
+          <span
+            style={{
+              fontSize: "9px",
+              fontWeight: 700,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              color: "#dc2626",
+              backgroundColor: darkMode ? "rgba(220,38,38,0.15)" : "#fef2f2",
+              border: "1px solid rgba(220,38,38,0.3)",
+              borderRadius: "6px",
+              padding: "2px 7px",
+            }}
           >
-            <Menu
-              className={`w-5 h-5 transition-transform duration-300 ${isSidebarOpen ? "rotate-0" : "-rotate-90"}`}
-            />
-          </button>
+            Admin
+          </span>
         </div>
 
-        {/* RIGHT */}
-        <div className="flex items-center gap-2">
+        <button
+          onClick={onToggleSidebar}
+          aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
+          style={{
+            width: "34px",
+            height: "34px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: "10px",
+            border: "none",
+            backgroundColor: "transparent",
+            color: subtext,
+            cursor: "pointer",
+            transition: "background-color 0.15s, color 0.15s",
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.backgroundColor = hoverBg;
+            event.currentTarget.style.color = text;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.backgroundColor = "transparent";
+            event.currentTarget.style.color = subtext;
+          }}
+        >
+          <Menu
+            size={18}
+            style={{
+              transform: isSidebarOpen ? "rotate(0deg)" : "rotate(-90deg)",
+              transition: "transform 0.3s",
+            }}
+          />
+        </button>
+      </div>
 
-          {/* Bell notification */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="relative text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        <button
+          onClick={onToggleDark}
+          title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+          style={{
+            width: "34px",
+            height: "34px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: "10px",
+            border: "none",
+            backgroundColor: "transparent",
+            color: darkMode ? "#f59e0b" : "#7c3aed",
+            cursor: "pointer",
+            transition: "background-color 0.15s",
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.backgroundColor = hoverBg;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.backgroundColor = "transparent";
+          }}
+        >
+          {darkMode ? <Sun size={17} /> : <Moon size={17} />}
+        </button>
+
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => {
+              setNotifOpen((open) => !open);
+              setDropdownOpen(false);
+            }}
+            aria-label="Notifications"
+            style={{
+              width: "34px",
+              height: "34px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "10px",
+              border: "none",
+              backgroundColor: "transparent",
+              color: subtext,
+              cursor: "pointer",
+              transition: "background-color 0.15s",
+              position: "relative",
+            }}
+            onMouseEnter={(event) => {
+              event.currentTarget.style.backgroundColor = hoverBg;
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.backgroundColor = "transparent";
+            }}
           >
-            <Bell className="w-5 h-5" />
-            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-500 rounded-full" />
-          </Button>
+            <Bell size={17} />
+            <span
+              style={{
+                position: "absolute",
+                top: "7px",
+                right: "7px",
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                backgroundColor: "#ef4444",
+                border: `2px solid ${bg}`,
+              }}
+            />
+          </button>
 
-          {/* Avatar + dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-white py-1 pl-1 pr-3 outline-none transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-red-500 via-red-600 to-amber-500 text-white shadow-sm ring-2 ring-white dark:ring-zinc-900">
-                  <ShieldCheck className="h-4 w-4" strokeWidth={2.2} />
-                </span>
-                <span className="hidden max-w-28 truncate text-xs font-semibold text-zinc-700 dark:text-zinc-300 sm:block">
-                  {displayName}
-                </span>
-              </button>
-            </DropdownMenuTrigger>
-
-            <DropdownMenuContent
-              align="end"
-              className="w-52 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-xl p-1.5"
-            >
-              {/* User info header */}
-              <DropdownMenuLabel className="px-2 py-2">
-                <div className="flex flex-col gap-0.5">
-                  <p className="text-sm font-bold text-zinc-900 dark:text-white">
-                    {displayName}
+          {notifOpen ? (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 40 }}
+                onClick={() => setNotifOpen(false)}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  zIndex: 50,
+                  width: "260px",
+                  borderRadius: "16px",
+                  border,
+                  backgroundColor: bg,
+                  boxShadow: darkMode
+                    ? "0 20px 60px rgba(0,0,0,0.6)"
+                    : "0 8px 40px rgba(0,0,0,0.12)",
+                  overflow: "hidden",
+                  padding: "10px",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "6px 8px 10px",
+                    borderBottom: `1px solid ${divider}`,
+                    marginBottom: "8px",
+                  }}
+                >
+                  <p style={{ fontSize: "12px", fontWeight: 700, color: text, margin: 0 }}>
+                    Notifications
                   </p>
-                  <p className="text-xs text-zinc-400 dark:text-zinc-500 font-normal">
-                    {displayEmail}
+                  <p style={{ fontSize: "11px", color: subtext, margin: "4px 0 0" }}>
+                    Latest admin updates for MovieBuzz.
                   </p>
                 </div>
-              </DropdownMenuLabel>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {NOTIFICATIONS.map((message) => (
+                    <div
+                      key={message}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: "12px",
+                        backgroundColor: darkMode ? "rgba(255,255,255,0.04)" : "#fafafa",
+                        border,
+                      }}
+                    >
+                      <p style={{ fontSize: "12px", color: text, margin: 0 }}>{message}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
 
-              <DropdownMenuSeparator className="bg-zinc-100 dark:bg-zinc-800 my-1" />
+        <div
+          style={{
+            width: "1px",
+            height: "24px",
+            backgroundColor: divider,
+            margin: "0 4px",
+          }}
+        />
 
-              {/* Profile */}
-              <DropdownMenuItem className="rounded-lg px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 cursor-pointer focus:bg-zinc-50 dark:focus:bg-zinc-800 focus:text-zinc-900 dark:focus:text-white">
-                <ShieldCheck className="mr-2 w-3.5 h-3.5 text-red-500" />
-                Profile
-              </DropdownMenuItem>
-
-              <DropdownMenuItem
-                onClick={onToggleDark}
-                className="rounded-lg px-3 py-2 text-xs font-medium cursor-pointer focus:bg-zinc-50 dark:focus:bg-zinc-800 text-zinc-700 dark:text-zinc-300 focus:text-zinc-900 dark:focus:text-white"
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => {
+              setDropdownOpen((open) => !open);
+              setNotifOpen(false);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              padding: "5px 10px 5px 5px",
+              borderRadius: "12px",
+              border,
+              backgroundColor: darkMode ? "rgba(255,255,255,0.04)" : "#fafafa",
+              cursor: "pointer",
+              transition: "background-color 0.15s",
+            }}
+            onMouseEnter={(event) => {
+              event.currentTarget.style.backgroundColor = hoverBg;
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.backgroundColor = darkMode
+                ? "rgba(255,255,255,0.04)"
+                : "#fafafa";
+            }}
+          >
+            <div
+              style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "9px",
+                background: "linear-gradient(135deg, #dc2626 0%, #b91c1c 50%, #f59e0b 100%)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#ffffff",
+                fontSize: "12px",
+                fontWeight: 800,
+                letterSpacing: "0.02em",
+                flexShrink: 0,
+                boxShadow: "0 2px 8px rgba(220,38,38,0.35)",
+              }}
+            >
+              {initials || <ShieldCheck size={16} />}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: "1px",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: text,
+                  maxWidth: "100px",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
               >
-                {darkMode ? (
-                  <>
-                    <Sun className="mr-2 w-3.5 h-3.5 text-amber-500" />
-                    <span className="text-amber-500">Light Mode</span>
-                  </>
-                ) : (
-                  <>
-                    <Moon className="mr-2 w-3.5 h-3.5 text-indigo-500" />
-                    <span className="text-indigo-500">Dark Mode</span>
-                  </>
-                )}
-              </DropdownMenuItem>
-
-              <DropdownMenuSeparator className="bg-zinc-100 dark:bg-zinc-800 my-1" />
-
-              {/* Logout */}
-              <DropdownMenuItem
-                onClick={onLogout}
-                className="rounded-lg px-3 py-2 text-xs font-medium text-red-500 cursor-pointer focus:bg-red-50 dark:focus:bg-red-900/20 focus:text-red-600"
+                {displayName}
+              </span>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 500,
+                  color: "#dc2626",
+                  letterSpacing: "0.04em",
+                }}
               >
-                <LogOut className="mr-2 w-3.5 h-3.5" />
-                Log out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                Administrator
+              </span>
+            </div>
+          </button>
+
+          {dropdownOpen ? (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 40 }}
+                onClick={() => setDropdownOpen(false)}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  zIndex: 50,
+                  width: "220px",
+                  borderRadius: "16px",
+                  border,
+                  backgroundColor: bg,
+                  boxShadow: darkMode
+                    ? "0 20px 60px rgba(0,0,0,0.6)"
+                    : "0 8px 40px rgba(0,0,0,0.12)",
+                  overflow: "hidden",
+                  padding: "8px",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "10px 12px 12px",
+                    borderBottom: `1px solid ${divider}`,
+                    marginBottom: "6px",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <div
+                      style={{
+                        width: "36px",
+                        height: "36px",
+                        borderRadius: "10px",
+                        background:
+                          "linear-gradient(135deg, #dc2626 0%, #b91c1c 50%, #f59e0b 100%)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#ffffff",
+                        fontSize: "13px",
+                        fontWeight: 800,
+                        flexShrink: 0,
+                        boxShadow: "0 2px 8px rgba(220,38,38,0.35)",
+                      }}
+                    >
+                      {initials || <ShieldCheck size={16} />}
+                    </div>
+                    <div>
+                      <p style={{ fontSize: "13px", fontWeight: 700, color: text, margin: 0 }}>
+                        {displayName}
+                      </p>
+                      <p
+                        style={{
+                          fontSize: "11px",
+                          color: subtext,
+                          margin: 0,
+                          marginTop: "1px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          maxWidth: "140px",
+                        }}
+                      >
+                        {displayEmail}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <DropdownBtn
+                  icon={darkMode ? <Sun size={14} /> : <Moon size={14} />}
+                  label={darkMode ? "Light Mode" : "Dark Mode"}
+                  iconColor={darkMode ? "#f59e0b" : "#7c3aed"}
+                  textColor={darkMode ? "#f59e0b" : "#7c3aed"}
+                  hoverBg={hoverBg}
+                  onClick={() => {
+                    onToggleDark();
+                    setDropdownOpen(false);
+                  }}
+                />
+
+                <DropdownBtn
+                  icon={<Settings size={14} />}
+                  label="Settings"
+                  iconColor={subtext}
+                  textColor={text}
+                  hoverBg={hoverBg}
+                  onClick={() => setDropdownOpen(false)}
+                />
+
+                <div style={{ height: "1px", backgroundColor: divider, margin: "6px 0" }} />
+
+                <DropdownBtn
+                  icon={<LogOut size={14} />}
+                  label="Log out"
+                  iconColor="#ef4444"
+                  textColor="#ef4444"
+                  hoverBg={darkMode ? "rgba(239,68,68,0.1)" : "#fef2f2"}
+                  onClick={() => {
+                    setDropdownOpen(false);
+                    onLogout?.();
+                  }}
+                />
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </nav>
+  );
+}
+
+function DropdownBtn({
+  icon,
+  label,
+  iconColor,
+  textColor,
+  hoverBg,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  iconColor: string;
+  textColor: string;
+  hoverBg: string;
+  onClick: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        padding: "8px 10px",
+        borderRadius: "10px",
+        border: "none",
+        backgroundColor: hovered ? hoverBg : "transparent",
+        cursor: "pointer",
+        transition: "background-color 0.15s",
+        color: textColor,
+      }}
+    >
+      <span style={{ color: iconColor, display: "flex", alignItems: "center" }}>{icon}</span>
+      <span style={{ fontSize: "12px", fontWeight: 600 }}>{label}</span>
+    </button>
   );
 }
