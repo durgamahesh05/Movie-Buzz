@@ -1,0 +1,13 @@
+{
+  "scripts": {
+    "dev": "npm --prefix frontend/MOVIEBUZZ run dev --",
+    "build": "npm --prefix frontend/MOVIEBUZZ run build --"
+  },
+  "dependencies": {
+    "react-router-dom": "^7.13.2",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@types/react-router-dom": "^5.3.3"
+  }
+}

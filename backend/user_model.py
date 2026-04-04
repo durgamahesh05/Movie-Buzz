@@ -1,0 +1,650 @@
+"""
+auth/user_model.py  –  SQLite user store for MovieBuzz
+No MongoDB. Uses the same moviebuzz.db as the recommender.
+"""
+
+import sqlite3
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import Any
+
+from config import env_path
+
+DB_PATH = env_path(
+    "DATABASE_URL",
+    "DB_PATH",
+    "MOVIEBUZZ_DB_PATH",
+    default=Path(__file__).resolve().parent / "moviebuzz.db",
+)
+
+INTERACTION_WEIGHT_MAP = {
+    "impression": 0.05,
+    "view": 0.20,
+    "click": 0.35,
+    "search": 0.15,
+    "search_match": 0.25,
+    "wishlist_add": 1.00,
+    "wishlist_remove": -0.50,
+    "trailer_open": 0.45,
+    "watch_time": 0.25,
+    "rating_like": 1.20,
+    "rating_dislike": -0.80,
+    "rating_neutral": 0.05,
+}
+
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_users_table():
+    """Create the users table if it doesn't exist. Called on startup."""
+    with get_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                email      TEXT NOT NULL UNIQUE,
+                password   TEXT NOT NULL,
+                verified   INTEGER DEFAULT 0,
+                otp        TEXT,
+                otp_expiry TEXT,
+                otp_purpose TEXT DEFAULT 'verify',
+                role       TEXT DEFAULT 'user',
+                age        INTEGER,
+                preferred_genres_json TEXT DEFAULT '[]',
+                preferred_moods_json TEXT DEFAULT '[]',
+                created_at TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS wishlist (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email  TEXT NOT NULL,
+                movie_key   TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                clean_title TEXT DEFAULT '',
+                year        TEXT DEFAULT '',
+                genres      TEXT DEFAULT '',
+                poster      TEXT DEFAULT '',
+                plot        TEXT DEFAULT '',
+                "cast"      TEXT DEFAULT '',
+                director    TEXT DEFAULT '',
+                imdb_rating TEXT DEFAULT '',
+                runtime     TEXT DEFAULT '',
+                rating      TEXT DEFAULT '',
+                youtube_link TEXT DEFAULT '',
+                created_at  TEXT DEFAULT '',
+                UNIQUE(user_email, movie_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+            CREATE INDEX IF NOT EXISTS idx_wishlist_user_email ON wishlist(user_email);
+            CREATE TABLE IF NOT EXISTS user_interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                movieId INTEGER,
+                event_type TEXT NOT NULL,
+                event_value REAL DEFAULT 1.0,
+                weight REAL DEFAULT 0.0,
+                session_id TEXT DEFAULT '',
+                query_text TEXT DEFAULT '',
+                source_page TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '',
+                ts TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ui_user_ts
+                ON user_interactions(user_id, ts DESC);
+            CREATE INDEX IF NOT EXISTS idx_ui_movie_ts
+                ON user_interactions(movieId, ts DESC);
+            CREATE INDEX IF NOT EXISTS idx_ui_event_ts
+                ON user_interactions(event_type, ts DESC);
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                genre_profile_json TEXT DEFAULT '',
+                actor_profile_json TEXT DEFAULT '',
+                keyword_profile_json TEXT DEFAULT '',
+                last_active_at TEXT DEFAULT '',
+                total_events INTEGER DEFAULT 0,
+                updated_at TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS recommendation_impressions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                movieId INTEGER NOT NULL,
+                rank_position INTEGER NOT NULL,
+                generator TEXT DEFAULT '',
+                score REAL DEFAULT 0.0,
+                ts TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ri_request_id
+                ON recommendation_impressions(request_id);
+            CREATE INDEX IF NOT EXISTS idx_ri_user_ts
+                ON recommendation_impressions(user_id, ts DESC);
+        """)
+        _ensure_user_columns(conn)
+
+
+def _ensure_user_columns(conn: sqlite3.Connection):
+    user_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if "otp_purpose" not in user_columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN otp_purpose TEXT DEFAULT 'verify'"
+        )
+    if "age" not in user_columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN age INTEGER"
+        )
+    if "preferred_genres_json" not in user_columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN preferred_genres_json TEXT DEFAULT '[]'"
+        )
+    if "preferred_moods_json" not in user_columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN preferred_moods_json TEXT DEFAULT '[]'"
+        )
+
+
+def _json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return []
+        raw_items = parsed if isinstance(parsed, list) else []
+    else:
+        return []
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        cleaned = str(item or "").strip()
+        lowered = cleaned.lower()
+        if not cleaned or lowered in seen:
+            continue
+        seen.add(lowered)
+        items.append(cleaned)
+    return items
+
+
+def _preferences_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {
+            "age": None,
+            "preferred_genres": [],
+            "preferred_moods": [],
+        }
+
+    raw_age = row.get("age")
+    try:
+        age = int(raw_age) if raw_age not in (None, "") else None
+    except Exception:
+        age = None
+
+    return {
+        "age": age,
+        "preferred_genres": _json_list(row.get("preferred_genres_json")),
+        "preferred_moods": _json_list(row.get("preferred_moods_json")),
+    }
+
+
+# ── CRUD helpers (match MongoDB-style API so auth_routes.py stays clean) ──────
+
+def find_one(email: str) -> dict | None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE email = ?", (email,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_one(data: dict):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO users (
+                name, email, password, verified, otp, otp_expiry, otp_purpose, role,
+                age, preferred_genres_json, preferred_moods_json, created_at
+            )
+            VALUES (
+                :name, :email, :password, :verified, :otp, :otp_expiry, :otp_purpose, :role,
+                :age, :preferred_genres_json, :preferred_moods_json, :created_at
+            )
+        """, {
+            "name":       data["name"],
+            "email":      data["email"],
+            "password":   data["password"],
+            "verified":   1 if data.get("verified") else 0,
+            "otp":        data.get("otp"),
+            "otp_expiry": data.get("otp_expiry"),
+            "otp_purpose": data.get("otp_purpose", "verify"),
+            "role":       data.get("role", "user"),
+            "age":        data.get("age"),
+            "preferred_genres_json": json.dumps(
+                _json_list(data.get("preferred_genres")),
+                ensure_ascii=True,
+            ),
+            "preferred_moods_json": json.dumps(
+                _json_list(data.get("preferred_moods")),
+                ensure_ascii=True,
+            ),
+            "created_at": data.get("created_at", datetime.utcnow().isoformat()),
+        })
+
+
+def get_preferences(email: str) -> dict[str, Any]:
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT age, preferred_genres_json, preferred_moods_json
+            FROM users
+            WHERE email = ?
+            """,
+            (email,),
+        ).fetchone()
+    return _preferences_from_row(dict(row) if row else None)
+
+
+def update_preferences(
+    email: str,
+    age: int | None = None,
+    preferred_genres: list[str] | None = None,
+    preferred_moods: list[str] | None = None,
+):
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET age = ?,
+                preferred_genres_json = ?,
+                preferred_moods_json = ?
+            WHERE email = ?
+            """,
+            (
+                age,
+                json.dumps(_json_list(preferred_genres or []), ensure_ascii=True),
+                json.dumps(_json_list(preferred_moods or []), ensure_ascii=True),
+                email,
+            ),
+        )
+
+
+def set_verified(email: str):
+    """Mark user as verified and clear OTP fields."""
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE users
+            SET verified = 1, otp = NULL, otp_expiry = NULL, otp_purpose = NULL
+            WHERE email = ?
+        """, (email,))
+
+
+def set_otp(email: str, otp: str, otp_expiry: str, purpose: str = "verify"):
+    """Update OTP and expiry for an existing user."""
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE users
+            SET otp = ?, otp_expiry = ?, otp_purpose = ?
+            WHERE email = ?
+        """, (otp, otp_expiry, purpose, email))
+
+
+def clear_otp(email: str):
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE users
+            SET otp = NULL, otp_expiry = NULL, otp_purpose = NULL
+            WHERE email = ?
+        """, (email,))
+
+
+def update_password(email: str, password: str):
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE users
+            SET password = ?
+            WHERE email = ?
+        """, (password, email))
+
+
+def update_name(email: str, name: str):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET name = ? WHERE email = ?",
+            (name, email),
+        )
+
+
+def get_all_users() -> list:
+    """Admin: return all users."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, email, verified, role, created_at
+            FROM users
+            ORDER BY datetime(created_at) DESC, id DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_user(email: str):
+    with get_db() as conn:
+        conn.execute("DELETE FROM wishlist WHERE user_email = ?", (email,))
+        conn.execute("DELETE FROM users WHERE email = ?", (email,))
+
+
+def update_role(email: str, role: str):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET role = ? WHERE email = ?", (role, email)
+        )
+
+
+def get_wishlist(email: str) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT
+                movie_key,
+                title,
+                clean_title,
+                year,
+                genres,
+                poster,
+                plot,
+                "cast",
+                director,
+                imdb_rating,
+                runtime,
+                rating,
+                youtube_link,
+                created_at
+            FROM wishlist
+            WHERE user_email = ?
+            ORDER BY created_at DESC, id DESC
+        """, (email,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_wishlist_item(email: str, movie: dict[str, Any]):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO wishlist (
+                user_email,
+                movie_key,
+                title,
+                clean_title,
+                year,
+                genres,
+                poster,
+                plot,
+                "cast",
+                director,
+                imdb_rating,
+                runtime,
+                rating,
+                youtube_link,
+                created_at
+            )
+            VALUES (
+                :user_email,
+                :movie_key,
+                :title,
+                :clean_title,
+                :year,
+                :genres,
+                :poster,
+                :plot,
+                :cast,
+                :director,
+                :imdb_rating,
+                :runtime,
+                :rating,
+                :youtube_link,
+                :created_at
+            )
+            ON CONFLICT(user_email, movie_key) DO UPDATE SET
+                title = excluded.title,
+                clean_title = excluded.clean_title,
+                year = excluded.year,
+                genres = excluded.genres,
+                poster = excluded.poster,
+                plot = excluded.plot,
+                "cast" = excluded."cast",
+                director = excluded.director,
+                imdb_rating = excluded.imdb_rating,
+                runtime = excluded.runtime,
+                rating = excluded.rating,
+                youtube_link = excluded.youtube_link
+        """, {
+            "user_email": email,
+            "movie_key": str(movie.get("movie_key", "")),
+            "title": str(movie.get("title", "")).strip(),
+            "clean_title": str(movie.get("clean_title", "")).strip(),
+            "year": str(movie.get("year", "")).strip(),
+            "genres": str(movie.get("genres", "")).strip(),
+            "poster": str(movie.get("poster", "")).strip(),
+            "plot": str(movie.get("plot", "")).strip(),
+            "cast": str(movie.get("cast", "")).strip(),
+            "director": str(movie.get("director", "")).strip(),
+            "imdb_rating": str(movie.get("imdb_rating", "")).strip(),
+            "runtime": str(movie.get("runtime", "")).strip(),
+            "rating": str(movie.get("rating", "")).strip(),
+            "youtube_link": str(movie.get("youtube_link", "")).strip(),
+            "created_at": datetime.utcnow().isoformat(),
+        })
+
+
+def remove_wishlist_item(email: str, movie_key: str):
+    with get_db() as conn:
+        conn.execute("""
+            DELETE FROM wishlist
+            WHERE user_email = ? AND movie_key = ?
+        """, (email, movie_key))
+
+
+def _normalise_interaction_event_type(event_type: str) -> str:
+    return (
+        str(event_type or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+
+def _coerce_movie_id(value: Any) -> int | None:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _derive_interaction_weight(
+    event_type: str,
+    event_value: float,
+    query_text: str = "",
+) -> float:
+    normalized_type = _normalise_interaction_event_type(event_type)
+    base_weight = INTERACTION_WEIGHT_MAP.get(normalized_type)
+
+    if normalized_type == "watch_time":
+        seconds = max(0.0, float(event_value or 0.0))
+        base_weight = 0.20 + min(seconds, 300.0) / 300.0 * 0.80
+    elif normalized_type == "search":
+        base_weight = 0.15 + min(len(str(query_text or "").split()), 5) * 0.02
+
+    if base_weight is None:
+        base_weight = float(event_value or 0.0)
+
+    return round(max(-1.5, min(float(base_weight), 1.5)), 4)
+
+
+def record_interaction(
+    user_id: str,
+    event_type: str,
+    movie_id: Any = None,
+    event_value: Any = 1.0,
+    session_id: str = "",
+    query_text: str = "",
+    source_page: str = "",
+    metadata: Any = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    normalized_user_id = str(user_id or "").strip().lower()
+    if not normalized_user_id:
+        raise ValueError("user_id is required")
+
+    normalized_event_type = _normalise_interaction_event_type(event_type)
+    if not normalized_event_type:
+        raise ValueError("event_type is required")
+
+    try:
+        resolved_event_value = float(event_value or 0.0)
+    except Exception:
+        resolved_event_value = 0.0
+
+    resolved_movie_id = _coerce_movie_id(movie_id)
+    resolved_ts = str(timestamp or datetime.utcnow().isoformat()).strip()
+    metadata_json = ""
+    if isinstance(metadata, str):
+        metadata_json = metadata.strip()
+    elif metadata not in (None, ""):
+        try:
+            metadata_json = json.dumps(metadata, ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            metadata_json = json.dumps({"value": str(metadata)}, ensure_ascii=True)
+
+    resolved_weight = _derive_interaction_weight(
+        normalized_event_type,
+        resolved_event_value,
+        query_text=str(query_text or ""),
+    )
+
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_interactions (
+                user_id,
+                movieId,
+                event_type,
+                event_value,
+                weight,
+                session_id,
+                query_text,
+                source_page,
+                metadata_json,
+                ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_user_id,
+                resolved_movie_id,
+                normalized_event_type,
+                resolved_event_value,
+                resolved_weight,
+                str(session_id or "").strip(),
+                str(query_text or "").strip(),
+                str(source_page or "").strip(),
+                metadata_json,
+                resolved_ts,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO user_profiles (
+                user_id,
+                last_active_at,
+                total_events,
+                updated_at
+            )
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                last_active_at = excluded.last_active_at,
+                total_events = user_profiles.total_events + 1,
+                updated_at = excluded.updated_at
+            """,
+            (normalized_user_id, resolved_ts, resolved_ts),
+        )
+
+    return {
+        "user_id": normalized_user_id,
+        "movie_id": resolved_movie_id,
+        "event_type": normalized_event_type,
+        "event_value": resolved_event_value,
+        "weight": resolved_weight,
+        "ts": resolved_ts,
+    }
+
+
+def record_recommendation_impressions(
+    user_id: str,
+    request_id: str,
+    items: list[dict[str, Any]],
+    timestamp: str | None = None,
+) -> int:
+    normalized_user_id = str(user_id or "").strip().lower()
+    normalized_request_id = str(request_id or "").strip()
+    if not normalized_user_id or not normalized_request_id or not items:
+        return 0
+
+    resolved_ts = str(timestamp or datetime.utcnow().isoformat()).strip()
+    rows: list[tuple[Any, ...]] = []
+
+    for rank_position, item in enumerate(items, start=1):
+        movie_id = _coerce_movie_id(item.get("movie_id") or item.get("movieId"))
+        if movie_id is None:
+            continue
+        try:
+            score = float(item.get("score") or 0.0)
+        except Exception:
+            score = 0.0
+        rows.append(
+            (
+                normalized_request_id,
+                normalized_user_id,
+                movie_id,
+                rank_position,
+                str(item.get("generator") or item.get("source") or "").strip(),
+                score,
+                resolved_ts,
+            )
+        )
+
+    if not rows:
+        return 0
+
+    with get_db() as conn:
+        conn.executemany(
+            """
+            INSERT INTO recommendation_impressions (
+                request_id,
+                user_id,
+                movieId,
+                rank_position,
+                generator,
+                score,
+                ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+    return len(rows)
+
+
+# Bootstrap on import
+init_users_table()

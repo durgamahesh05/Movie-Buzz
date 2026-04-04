@@ -1,0 +1,22 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --moviebuzz-surface: #ffffff;
+  --moviebuzz-surface-dark: #111827;
+  --moviebuzz-border: rgba(0, 0, 0, 0.1);
+  --moviebuzz-border-dark: rgba(255, 255, 255, 0.08);
+  --moviebuzz-text: #111827;
+  --moviebuzz-text-dark: #f8fafc;
+}
+
+html,
+body {
+  background: var(--moviebuzz-surface);
+  color: var(--moviebuzz-text);
+}
+
+html.dark body,
+body.dark {
+  background: var(--moviebuzz-surface-dark);
+  color: var(--moviebuzz-text-dark);
+}
