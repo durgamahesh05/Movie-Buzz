@@ -48,6 +48,7 @@ log = logging.getLogger(__name__)
 auth_router = APIRouter()
 VERIFY_OTP_MINUTES = 5
 SENSITIVE_OTP_MINUTES = 10
+LOCAL_REQUEST_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 PASSWORD_POLICY_MESSAGE = (
     "Password must be at least 6 characters and include 1 uppercase letter, "
     "1 number, and 1 special character"
@@ -115,6 +116,35 @@ def generate_otp() -> str:
 
 def _normalise_email(value: str) -> str:
     return value.strip().lower()
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return env(name, default=default).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _is_local_request(request: Request) -> bool:
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip().lower()
+    return host in LOCAL_REQUEST_HOSTS
+
+
+def _allow_local_auth_fallback(request: Request) -> bool:
+    return _is_local_request(request) and _env_flag(
+        "MOVIEBUZZ_ALLOW_LOCAL_AUTH_FALLBACK",
+        default="1",
+    )
+
+
+def _local_otp_delivery_response(otp: str, action_label: str) -> dict[str, object]:
+    return {
+        "success": True,
+        "msg": (
+            f"{action_label} Email delivery is unavailable on localhost. "
+            f"Use OTP {otp} to continue."
+        ),
+        "delivery": "local-fallback",
+        "dev_otp": otp,
+    }
 
 
 def _otp_expiry(minutes: int) -> str:
@@ -241,7 +271,7 @@ def _otp_is_valid(user: dict | None, otp: str, purpose: str) -> bool:
 def ensure_system_admins() -> int:
     ready_accounts = 0
 
-    for account in SYSTEM_ADMIN_ACCOUNTS:
+    for account in _load_system_admin_accounts() or SYSTEM_ADMIN_ACCOUNTS:
         email = _normalise_email(account["email"])
         password = account["password"]
         existing = find_one(email)
@@ -318,9 +348,6 @@ async def signup(request: Request):
     expiry = _otp_expiry(VERIFY_OTP_MINUTES)
 
     try:
-        if not send_verification_otp_email(email, otp, name):
-            return {"success": False, "msg": "Unable to send verification email right now"}
-
         if existing_user:
             update_name(email, name)
             update_password(email, hashed)
@@ -331,23 +358,28 @@ async def signup(request: Request):
                 preferred_moods=preferred_moods,
             )
             set_otp(email, otp, expiry, "verify")
-            return {"success": True, "msg": "OTP sent to your email"}
+        else:
+            insert_one({
+                "name":       name,
+                "email":      email,
+                "password":   hashed,
+                "verified":   False,
+                "otp":        otp,
+                "otp_expiry": expiry,
+                "otp_purpose": "verify",
+                "role":       "user",
+                "age":        age,
+                "preferred_genres": preferred_genres,
+                "preferred_moods": preferred_moods,
+                "created_at": datetime.utcnow().isoformat(),
+            })
 
-        insert_one({
-            "name":       name,
-            "email":      email,
-            "password":   hashed,
-            "verified":   False,
-            "otp":        otp,
-            "otp_expiry": expiry,
-            "otp_purpose": "verify",
-            "role":       "user",
-            "age":        age,
-            "preferred_genres": preferred_genres,
-            "preferred_moods": preferred_moods,
-            "created_at": datetime.utcnow().isoformat(),
-        })
-        return {"success": True, "msg": "OTP sent to your email"}
+        if send_verification_otp_email(email, otp, name):
+            return {"success": True, "msg": "OTP sent to your email"}
+        if _allow_local_auth_fallback(request):
+            log.warning("Local signup OTP fallback used for %s", email)
+            return _local_otp_delivery_response(otp, "Account created.")
+        return {"success": False, "msg": "Unable to send verification email right now"}
     except Exception:
         return {"success": False, "msg": "Unable to create account right now"}
 
@@ -391,10 +423,13 @@ async def resend_otp(request: Request):
 
     otp    = generate_otp()
     expiry = _otp_expiry(VERIFY_OTP_MINUTES)
-    if not send_verification_otp_email(email, otp, user.get("name", "")):
-        return {"success": False, "msg": "Unable to send verification email right now"}
     set_otp(email, otp, expiry, "verify")
-    return {"success": True, "msg": "New OTP sent"}
+    if send_verification_otp_email(email, otp, user.get("name", "")):
+        return {"success": True, "msg": "New OTP sent"}
+    if _allow_local_auth_fallback(request):
+        log.warning("Local resend OTP fallback used for %s", email)
+        return _local_otp_delivery_response(otp, "New OTP generated.")
+    return {"success": False, "msg": "Unable to send verification email right now"}
 
 
 @auth_router.post("/login")
@@ -404,6 +439,9 @@ async def login(request: Request):
     password = data.get("password", "")
 
     user = find_one(email)
+    if not user and _allow_local_auth_fallback(request):
+        ensure_system_admins()
+        user = find_one(email)
     if not user:
         return {"success": False, "msg": "User not found"}
     if not user.get("verified"):
@@ -491,11 +529,13 @@ async def forgot_password_request_otp(request: Request):
 
     otp = generate_otp()
     expiry = _otp_expiry(SENSITIVE_OTP_MINUTES)
-    if not send_password_reset_otp_email(email, otp):
-        return {"success": False, "msg": "Unable to send password reset email right now"}
-
     set_otp(email, otp, expiry, "password_reset")
-    return {"success": True, "msg": "Password reset OTP sent to your email"}
+    if send_password_reset_otp_email(email, otp):
+        return {"success": True, "msg": "Password reset OTP sent to your email"}
+    if _allow_local_auth_fallback(request):
+        log.warning("Local password reset OTP fallback used for %s", email)
+        return _local_otp_delivery_response(otp, "Password reset OTP generated.")
+    return {"success": False, "msg": "Unable to send password reset email right now"}
 
 
 @auth_router.post("/forgot-password/verify-otp")
@@ -549,11 +589,13 @@ async def request_delete_account_otp(request: Request):
 
     otp = generate_otp()
     expiry = _otp_expiry(SENSITIVE_OTP_MINUTES)
-    if not send_account_deletion_otp_email(email, otp):
-        return {"success": False, "msg": "Unable to send deletion OTP right now"}
-
     set_otp(email, otp, expiry, "delete_account")
-    return {"success": True, "msg": "Account deletion OTP sent to your email"}
+    if send_account_deletion_otp_email(email, otp):
+        return {"success": True, "msg": "Account deletion OTP sent to your email"}
+    if _allow_local_auth_fallback(request):
+        log.warning("Local account deletion OTP fallback used for %s", email)
+        return _local_otp_delivery_response(otp, "Account deletion OTP generated.")
+    return {"success": False, "msg": "Unable to send deletion OTP right now"}
 
 
 @auth_router.post("/delete/confirm")
