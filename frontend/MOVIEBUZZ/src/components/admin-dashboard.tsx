@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AdminSidebar } from "./admin-sidebar";
 import { StatsCards } from "./stats-cards";
@@ -28,6 +28,7 @@ function revokePlotUrls(plotUrls: Record<AdminMetricPlotKind, string>) {
   if (typeof URL === "undefined") {
     return;
   }
+
   for (const plotUrl of Object.values(plotUrls)) {
     if (plotUrl) {
       URL.revokeObjectURL(plotUrl);
@@ -56,10 +57,192 @@ function formatMetricsTimestamp(value?: string) {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString();
 }
 
-function renderChartFallback(message: string) {
+interface PageHeaderProps {
+  title: string;
+  subtitle: string;
+  text: string;
+  subtext: string;
+}
+
+function PageHeader({ title, subtitle, text, subtext }: PageHeaderProps) {
   return (
-    <div className="flex h-72 items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-400">
+    <div style={{ marginBottom: "28px" }}>
+      <h1
+        style={{
+          fontSize: "26px",
+          fontWeight: 900,
+          color: text,
+          margin: 0,
+          letterSpacing: "-0.025em",
+        }}
+      >
+        {title}
+      </h1>
+      <p style={{ fontSize: "14px", color: subtext, margin: 0, marginTop: "4px" }}>
+        {subtitle}
+      </p>
+    </div>
+  );
+}
+
+function ChartFallback({
+  message,
+  borderColor,
+  isDark,
+  subtext,
+}: {
+  message: string;
+  borderColor: string;
+  isDark: boolean;
+  subtext: string;
+}) {
+  return (
+    <div
+      style={{
+        height: "288px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: "12px",
+        border: `1px dashed ${borderColor}`,
+        backgroundColor: isDark ? "rgba(255,255,255,0.02)" : "#fafafa",
+        fontSize: "13px",
+        color: subtext,
+      }}
+    >
       {message}
+    </div>
+  );
+}
+
+interface MetricCardProps {
+  title: string;
+  value: string;
+  subtitle: string;
+  color: string;
+  bgColor: string;
+  cardBg: string;
+  borderColor: string;
+  text: string;
+  subtext: string;
+  isDark: boolean;
+  loading: boolean;
+}
+
+function MetricCard({
+  title,
+  value,
+  subtitle,
+  color,
+  bgColor,
+  cardBg,
+  borderColor,
+  text,
+  subtext,
+  isDark,
+  loading,
+}: MetricCardProps) {
+  return (
+    <div
+      style={{
+        backgroundColor: cardBg,
+        border: `1px solid ${borderColor}`,
+        borderRadius: "16px",
+        padding: "20px",
+        boxShadow: isDark ? "none" : "0 1px 4px rgba(0,0,0,0.06)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "12px",
+        }}
+      >
+        <p
+          style={{
+            fontSize: "12px",
+            fontWeight: 600,
+            color: subtext,
+            margin: 0,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+          }}
+        >
+          {title}
+        </p>
+        <div
+          style={{
+            width: "24px",
+            height: "24px",
+            borderRadius: "999px",
+            backgroundColor: bgColor,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              width: "8px",
+              height: "8px",
+              borderRadius: "50%",
+              backgroundColor: color,
+              boxShadow: `0 0 6px ${color}`,
+            }}
+          />
+        </div>
+      </div>
+      <div style={{ fontSize: "30px", fontWeight: 800, color: text, letterSpacing: "-0.03em" }}>
+        {loading ? <span style={{ fontSize: "14px", color: subtext }}>Loading...</span> : value}
+      </div>
+      <p style={{ fontSize: "12px", color: subtext, margin: 0, marginTop: "6px" }}>
+        {subtitle}
+      </p>
+    </div>
+  );
+}
+
+function InfoCard({
+  title,
+  children,
+  cardBg,
+  borderColor,
+  text,
+  isDark,
+}: {
+  title: string;
+  children: ReactNode;
+  cardBg: string;
+  borderColor: string;
+  text: string;
+  isDark: boolean;
+}) {
+  return (
+    <div
+      style={{
+        backgroundColor: cardBg,
+        border: `1px solid ${borderColor}`,
+        borderRadius: "16px",
+        padding: "22px",
+        boxShadow: isDark ? "none" : "0 1px 4px rgba(0,0,0,0.06)",
+      }}
+    >
+      <h2
+        style={{
+          fontSize: "15px",
+          fontWeight: 700,
+          color: text,
+          margin: 0,
+          marginBottom: "16px",
+          paddingBottom: "12px",
+          borderBottom: `1px solid ${borderColor}`,
+        }}
+      >
+        {title}
+      </h2>
+      {children}
     </div>
   );
 }
@@ -75,6 +258,12 @@ export function AdminDashboard() {
     useState<Record<AdminMetricPlotKind, string>>(EMPTY_METRIC_PLOTS);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState("");
+
+  const bg = isDark ? "#09090b" : "#f9f9fb";
+  const cardBg = isDark ? "#18181b" : "#ffffff";
+  const border = isDark ? "rgba(255,255,255,0.08)" : "#e4e4e7";
+  const text = isDark ? "#f4f4f5" : "#09090b";
+  const subtext = "#71717a";
 
   const handleLogout = () => {
     logout();
@@ -184,22 +373,30 @@ export function AdminDashboard() {
     {
       title: "NCF AUC",
       value: formatPercentMetric(modelMetrics.ncf_auc),
-      subtitle: "Ranking quality from the latest saved evaluation report",
+      subtitle: "Ranking quality from latest evaluation",
+      color: "#3b82f6",
+      bgColor: isDark ? "rgba(59,130,246,0.12)" : "#eff6ff",
     },
     {
       title: "NCF BCE",
       value: formatMetric(modelMetrics.ncf_bce),
-      subtitle: "Lower is better for the neural collaborative model",
+      subtitle: "Lower is better - neural collaborative",
+      color: "#10b981",
+      bgColor: isDark ? "rgba(16,185,129,0.12)" : "#f0fdf4",
     },
     {
       title: "XGB AUC",
       value: formatPercentMetric(modelMetrics.xgb_auc),
-      subtitle: "Tree re-ranker quality on the evaluation split",
+      subtitle: "Tree re-ranker quality on eval split",
+      color: "#8b5cf6",
+      bgColor: isDark ? "rgba(139,92,246,0.12)" : "#f5f3ff",
     },
     {
       title: "XGB LogLoss",
       value: formatMetric(modelMetrics.xgb_logloss),
-      subtitle: "Probability calibration loss for the XGBoost stage",
+      subtitle: "Probability calibration loss for XGBoost",
+      color: "#f59e0b",
+      bgColor: isDark ? "rgba(245,158,11,0.12)" : "#fffbeb",
     },
   ];
 
@@ -234,23 +431,49 @@ export function AdminDashboard() {
     switch (activeView) {
       case "dashboard":
         return (
-          <div className="space-y-8">
-            <div>
-              <h1 className="text-3xl font-bold dark:text-white">Dashboard Overview</h1>
-              <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                Monitor your platform's performance and activity
-              </p>
-            </div>
-
+          <div>
+            <PageHeader
+              title="Dashboard Overview"
+              subtitle="Monitor your platform's performance and activity"
+              text={text}
+              subtext={subtext}
+            />
             <StatsCards refreshToken={catalogRefreshToken} />
 
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+                gap: "24px",
+                marginTop: "28px",
+              }}
+            >
               <div>
-                <h2 className="mb-4 text-xl font-bold dark:text-white">Recent Users</h2>
+                <h2
+                  style={{
+                    fontSize: "16px",
+                    fontWeight: 700,
+                    color: text,
+                    margin: 0,
+                    marginBottom: "14px",
+                  }}
+                >
+                  Recent Users
+                </h2>
                 <UsersTable limit={5} />
               </div>
               <div>
-                <h2 className="mb-4 text-xl font-bold dark:text-white">Recent Movies</h2>
+                <h2
+                  style={{
+                    fontSize: "16px",
+                    fontWeight: 700,
+                    color: text,
+                    margin: 0,
+                    marginBottom: "14px",
+                  }}
+                >
+                  Recent Movies
+                </h2>
                 <MoviesTable limit={5} refreshToken={catalogRefreshToken} />
               </div>
             </div>
@@ -259,26 +482,26 @@ export function AdminDashboard() {
 
       case "users":
         return (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-3xl font-bold dark:text-white">Manage Users</h1>
-              <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                View and manage all registered users
-              </p>
-            </div>
+          <div>
+            <PageHeader
+              title="Manage Users"
+              subtitle="View and manage all registered users"
+              text={text}
+              subtext={subtext}
+            />
             <UsersTable />
           </div>
         );
 
       case "movies":
         return (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-3xl font-bold dark:text-white">Manage Movies</h1>
-              <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                Add, edit, or remove movies from the platform
-              </p>
-            </div>
+          <div>
+            <PageHeader
+              title="Manage Movies"
+              subtitle="Add, edit, or remove movies from the platform"
+              text={text}
+              subtext={subtext}
+            />
             <MoviesTable
               refreshToken={catalogRefreshToken}
               onCatalogChange={handleCatalogChange}
@@ -288,205 +511,265 @@ export function AdminDashboard() {
 
       case "analytics":
         return (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-3xl font-bold dark:text-white">Analytics</h1>
-              <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                Latest training insights and recommendation quality signals
-              </p>
-            </div>
+          <div>
+            <PageHeader
+              title="Analytics"
+              subtitle="Latest training insights and recommendation quality signals"
+              text={text}
+              subtext={subtext}
+            />
 
             <StatsCards refreshToken={catalogRefreshToken} />
 
             {metricsError ? (
-              <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-950/60 dark:bg-rose-950/30 dark:text-rose-200">
+              <div
+                style={{
+                  marginTop: "20px",
+                  padding: "14px 16px",
+                  borderRadius: "12px",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  backgroundColor: isDark ? "rgba(239,68,68,0.1)" : "#fef2f2",
+                  color: isDark ? "#fca5a5" : "#b91c1c",
+                  fontSize: "13px",
+                }}
+              >
                 {metricsError}
               </div>
             ) : null}
 
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                gap: "16px",
+                marginTop: "24px",
+              }}
+            >
               {summaryCards.map((metric) => (
-                <div
+                <MetricCard
                   key={metric.title}
-                  className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
-                >
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {metric.title}
-                  </p>
-                  <div className="mt-3 text-3xl font-bold tracking-tight text-zinc-950 dark:text-white">
-                    {metricsLoading ? "Loading..." : metric.value}
-                  </div>
-                  <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                    {metric.subtitle}
-                  </p>
-                </div>
+                  {...metric}
+                  cardBg={cardBg}
+                  borderColor={border}
+                  text={text}
+                  subtext={subtext}
+                  isDark={isDark}
+                  loading={metricsLoading}
+                />
               ))}
             </div>
 
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                <h2 className="text-lg font-semibold dark:text-white">Latest Training Run</h2>
-                <div className="mt-4 space-y-3 text-sm text-zinc-600 dark:text-zinc-400">
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      Run ID:
-                    </span>{" "}
-                    {metricsLoading ? "Loading..." : modelMetrics.run_id || "N/A"}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      Updated:
-                    </span>{" "}
-                    {metricsLoading
-                      ? "Loading..."
-                      : formatMetricsTimestamp(
-                          modelMetrics.report_generated_at || modelMetrics.updated_at,
-                        )}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      Available models:
-                    </span>{" "}
-                    {metricsLoading ? "Loading..." : availableModelsLabel}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      Missing models:
-                    </span>{" "}
-                    {metricsLoading ? "Loading..." : missingModelsLabel}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      Test split:
-                    </span>{" "}
-                    {metricsLoading
-                      ? "Loading..."
-                      : formatPercentMetric(modelMetrics.test_ratio, 0)}
-                  </p>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+                gap: "16px",
+                marginTop: "20px",
+              }}
+            >
+              <InfoCard
+                title="Latest Training Run"
+                cardBg={cardBg}
+                borderColor={border}
+                text={text}
+                isDark={isDark}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px",
+                    fontSize: "13px",
+                  }}
+                >
+                  {[
+                    ["Run ID", metricsLoading ? "Loading..." : modelMetrics.run_id || "N/A"],
+                    [
+                      "Updated",
+                      metricsLoading
+                        ? "Loading..."
+                        : formatMetricsTimestamp(
+                            modelMetrics.report_generated_at || modelMetrics.updated_at,
+                          ),
+                    ],
+                    [
+                      "Available models",
+                      metricsLoading ? "Loading..." : availableModelsLabel,
+                    ],
+                    [
+                      "Missing models",
+                      metricsLoading ? "Loading..." : missingModelsLabel,
+                    ],
+                    [
+                      "Test split",
+                      metricsLoading
+                        ? "Loading..."
+                        : formatPercentMetric(modelMetrics.test_ratio, 0),
+                    ],
+                  ].map(([label, value]) => (
+                    <div
+                      key={label}
+                      style={{ display: "flex", justifyContent: "space-between", gap: "12px" }}
+                    >
+                      <span style={{ color: subtext, flexShrink: 0 }}>{label}</span>
+                      <span
+                        style={{ color: text, fontWeight: 600, textAlign: "right" }}
+                      >
+                        {value}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              </InfoCard>
 
-              <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                <h2 className="text-lg font-semibold dark:text-white">
-                  Recommendation Health
-                </h2>
-                <p className="mt-4 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-                  Search now resolves franchise titles more accurately before the
-                  recommender picks similar movies, and the analytics panel is reading the
-                  latest saved evaluation report instead of showing placeholder values.
-                </p>
-                <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      NCF F1:
-                    </span>{" "}
-                    {metricsLoading ? "Loading..." : formatPercentMetric(modelMetrics.ncf_f1)}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      NCF Recall:
-                    </span>{" "}
-                    {metricsLoading
-                      ? "Loading..."
-                      : formatPercentMetric(modelMetrics.ncf_recall)}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      NCF Precision:
-                    </span>{" "}
-                    {metricsLoading
-                      ? "Loading..."
-                      : formatPercentMetric(modelMetrics.ncf_precision)}
-                  </p>
-                  <p>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                      XGB F1:
-                    </span>{" "}
-                    {metricsLoading ? "Loading..." : formatPercentMetric(modelMetrics.xgb_f1)}
-                  </p>
+              <InfoCard
+                title="Recommendation Health"
+                cardBg={cardBg}
+                borderColor={border}
+                text={text}
+                isDark={isDark}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "10px",
+                    fontSize: "13px",
+                  }}
+                >
+                  {[
+                    ["NCF F1", formatPercentMetric(modelMetrics.ncf_f1)],
+                    ["NCF Recall", formatPercentMetric(modelMetrics.ncf_recall)],
+                    ["NCF Precision", formatPercentMetric(modelMetrics.ncf_precision)],
+                    ["XGB F1", formatPercentMetric(modelMetrics.xgb_f1)],
+                  ].map(([label, value]) => (
+                    <div
+                      key={label}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: "10px",
+                        backgroundColor: isDark ? "rgba(255,255,255,0.04)" : "#f8fafc",
+                        border: `1px solid ${border}`,
+                      }}
+                    >
+                      <p
+                        style={{ fontSize: "11px", color: subtext, margin: 0, marginBottom: "4px" }}
+                      >
+                        {label}
+                      </p>
+                      <p style={{ fontSize: "16px", fontWeight: 700, color: text, margin: 0 }}>
+                        {metricsLoading ? "..." : value}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              </InfoCard>
             </div>
 
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-              <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-4">
-                  <h2 className="text-lg font-semibold dark:text-white">
-                    Model Quality Comparison
-                  </h2>
-                  <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                    AUC, F1, precision, and recall from the latest saved evaluation.
-                  </p>
-                </div>
-
-                {metricsLoading ? (
-                  renderChartFallback("Loading comparison graph...")
-                ) : plotUrls.comparison ? (
-                  <div className="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/60">
-                    <img
-                      src={plotUrls.comparison}
-                      alt="Model quality comparison graph"
-                      className="h-auto w-full rounded-md"
-                    />
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                gap: "16px",
+                marginTop: "20px",
+              }}
+            >
+              {[
+                {
+                  key: "comparison" as AdminMetricPlotKind,
+                  title: "Model Quality Comparison",
+                  subtitle: "AUC, F1, precision, recall from latest saved evaluation",
+                  alt: "Model quality comparison graph",
+                  emptyMsg: "No saved comparison metrics available yet.",
+                },
+                {
+                  key: "loss" as AdminMetricPlotKind,
+                  title: "Loss Snapshot",
+                  subtitle: "Latest saved loss values for trained ranking stages",
+                  alt: "Ranking loss graph",
+                  emptyMsg: "No saved loss metrics available yet.",
+                },
+                {
+                  key: "availability" as AdminMetricPlotKind,
+                  title: "Live Recommender Stack",
+                  subtitle: "Availability of models currently loaded by backend",
+                  alt: "Live recommender stack graph",
+                  emptyMsg: "No live engine availability metrics available yet.",
+                },
+              ].map((chart) => (
+                <div
+                  key={chart.key}
+                  style={{
+                    backgroundColor: cardBg,
+                    border: `1px solid ${border}`,
+                    borderRadius: "16px",
+                    padding: "20px",
+                    boxShadow: isDark ? "none" : "0 1px 4px rgba(0,0,0,0.06)",
+                  }}
+                >
+                  <div style={{ marginBottom: "14px" }}>
+                    <h2 style={{ fontSize: "14px", fontWeight: 700, color: text, margin: 0 }}>
+                      {chart.title}
+                    </h2>
+                    <p style={{ fontSize: "12px", color: subtext, margin: 0, marginTop: "3px" }}>
+                      {chart.subtitle}
+                    </p>
                   </div>
-                ) : comparisonData.length ? (
-                  renderChartFallback("Matplotlib comparison graph is unavailable.")
-                ) : (
-                  renderChartFallback("No saved comparison metrics are available yet.")
-                )}
-              </div>
 
-              <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-4">
-                  <h2 className="text-lg font-semibold dark:text-white">Loss Snapshot</h2>
-                  <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                    Latest saved loss values for the trained ranking stages.
-                  </p>
-                </div>
-
-                {metricsLoading ? (
-                  renderChartFallback("Loading loss graph...")
-                ) : plotUrls.loss ? (
-                  <div className="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/60">
-                    <img
-                      src={plotUrls.loss}
-                      alt="Ranking loss graph"
-                      className="h-auto w-full rounded-md"
+                  {metricsLoading ? (
+                    <ChartFallback
+                      message={`Loading ${chart.title.toLowerCase()}...`}
+                      borderColor={border}
+                      isDark={isDark}
+                      subtext={subtext}
                     />
-                  </div>
-                ) : lossChartData.length ? (
-                  renderChartFallback("Matplotlib loss graph is unavailable.")
-                ) : (
-                  renderChartFallback("No saved loss metrics are available yet.")
-                )}
-              </div>
-
-              <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-4">
-                  <h2 className="text-lg font-semibold dark:text-white">
-                    Live Recommender Stack
-                  </h2>
-                  <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                    Availability of the models currently loaded by the backend engine.
-                  </p>
-                </div>
-
-                {metricsLoading ? (
-                  renderChartFallback("Loading live engine graph...")
-                ) : plotUrls.availability ? (
-                  <div className="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/60">
-                    <img
-                      src={plotUrls.availability}
-                      alt="Live recommender stack graph"
-                      className="h-auto w-full rounded-md"
+                  ) : plotUrls[chart.key] ? (
+                    <div
+                      style={{
+                        overflow: "hidden",
+                        borderRadius: "10px",
+                        border: `1px solid ${border}`,
+                        backgroundColor: isDark ? "rgba(255,255,255,0.02)" : "#f9f9f9",
+                        padding: "8px",
+                      }}
+                    >
+                      <img
+                        src={plotUrls[chart.key]}
+                        alt={chart.alt}
+                        style={{ width: "100%", height: "auto", borderRadius: "6px" }}
+                      />
+                    </div>
+                  ) : chart.key === "comparison" && comparisonData.length ? (
+                    <ChartFallback
+                      message="Matplotlib comparison graph is unavailable."
+                      borderColor={border}
+                      isDark={isDark}
+                      subtext={subtext}
                     />
-                  </div>
-                ) : hasLiveStackData ? (
-                  renderChartFallback("Matplotlib live engine graph is unavailable.")
-                ) : (
-                  renderChartFallback("No live engine availability metrics are available yet.")
-                )}
-              </div>
+                  ) : chart.key === "loss" && lossChartData.length ? (
+                    <ChartFallback
+                      message="Matplotlib loss graph is unavailable."
+                      borderColor={border}
+                      isDark={isDark}
+                      subtext={subtext}
+                    />
+                  ) : chart.key === "availability" && hasLiveStackData ? (
+                    <ChartFallback
+                      message="Matplotlib live engine graph is unavailable."
+                      borderColor={border}
+                      isDark={isDark}
+                      subtext={subtext}
+                    />
+                  ) : (
+                    <ChartFallback
+                      message={chart.emptyMsg}
+                      borderColor={border}
+                      isDark={isDark}
+                      subtext={subtext}
+                    />
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         );
@@ -497,30 +780,50 @@ export function AdminDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-950 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-50">
-      <div className="min-h-screen">
-        <AdminNavbar
-          onLogout={handleLogout}
-          darkMode={isDark}
-          isSidebarOpen={isSidebarOpen}
-          onToggleDark={toggleTheme}
-          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-          userName={user?.name}
-          userEmail={user?.email}
+    <div
+      style={{
+        minHeight: "100vh",
+        backgroundColor: bg,
+        color: text,
+        transition: "background-color 0.3s, color 0.3s",
+      }}
+    >
+      <AdminNavbar
+        onLogout={handleLogout}
+        darkMode={isDark}
+        isSidebarOpen={isSidebarOpen}
+        onToggleDark={toggleTheme}
+        onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+        userName={user?.name}
+        userEmail={user?.email}
+      />
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: isSidebarOpen ? "240px 1fr" : "0px 1fr",
+          transition: "grid-template-columns 0.3s ease",
+          minHeight: "calc(100vh - 64px)",
+          alignItems: "start",
+        }}
+      >
+        <AdminSidebar
+          activeView={activeView}
+          onViewChange={setActiveView}
+          isOpen={isSidebarOpen}
+          isDark={isDark}
         />
 
-        <div className="flex w-full">
-          <AdminSidebar
-            activeView={activeView}
-            onViewChange={setActiveView}
-            isOpen={isSidebarOpen}
-            isDark={isDark}
-          />
-
-          <main className="min-w-0 w-full flex-1 p-8 transition-all duration-300">
-            {renderView()}
-          </main>
-        </div>
+        <main
+          style={{
+            minWidth: 0,
+            width: "100%",
+            padding: "32px",
+            boxSizing: "border-box",
+          }}
+        >
+          {renderView()}
+        </main>
       </div>
     </div>
   );
