@@ -1164,6 +1164,10 @@ def _load_ncf_artifacts() -> tuple[Any, dict[int, int], dict[int, int]] | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_db() -> sqlite3.Connection:
+    import os
+
+    db_dir = os.path.dirname(str(DB_PATH)) or "."
+    os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
