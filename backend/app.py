@@ -66,6 +66,11 @@ app.include_router(auth_router, prefix="/auth")
 app.include_router(trailer_router)
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 def _normalize_admin_filter_value(value: str | None) -> str:
     return " ".join(
         str(value or "")
