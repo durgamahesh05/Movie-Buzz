@@ -36,9 +36,7 @@ INTERACTION_WEIGHT_MAP = {
 
 def get_db() -> sqlite3.Connection:
     import os
-
-    db_dir = os.path.dirname(str(DB_PATH)) or "."
-    os.makedirs(db_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(str(DB_PATH)), exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
