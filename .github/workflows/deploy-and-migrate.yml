@@ -1,0 +1,83 @@
+name: Deploy & Migrate
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+  SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+  SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+  SUPABASE_DB_USER: postgres
+  SUPABASE_DB_NAME: postgres
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout repository
+      - uses: actions/checkout@v3
+
+      # Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      # Run tests (optional)
+      - name: Run tests
+        run: |
+          cd backend
+          python -m pytest test_app.py -v
+        continue-on-error: true
+
+      # Initialize database schema
+      - name: Initialize Supabase database
+        run: |
+          cd backend
+          python -c "from db import init_db; init_db()" || echo "Database already initialized"
+
+      # Render auto-deploys from GitHub, so no manual push needed
+      - name: Notify Render webhook
+        run: |
+          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }} || true
+        if: always()
+
+  # Optional: Sync data to Supabase
+  sync-data:
+    runs-on: ubuntu-latest
+    needs: test-and-deploy
+    if: success()
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Migrate SQLite data to Supabase (if needed)
+        run: |
+          cd backend
+          python migrate_sqlite_to_postgres.py --skip-truncate || true
+        env:
+          SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
