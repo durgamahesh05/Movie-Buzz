@@ -5,11 +5,11 @@ FastAPI router for movie trailer functionality.
 
 Flow:
   1. Client calls GET /api/trailer/{movie_id}
-  2. Check SQLite cache (trailer_cache table) — return immediately if hit
+  2. Check trailer cache table — return immediately if hit
   3. On cache miss → call OMDB API for that movie
   4. OMDB returns a "Website" or embedded trailer URL (YouTube link)
   5. Extract YouTube video ID from the URL
-  6. Cache video_id in SQLite with movie_id key
+  6. Cache video_id in the database with movie_id key
   7. Return { video_id, embed_url, title } to frontend
 
 Mount this router in your main app:
@@ -19,16 +19,15 @@ Mount this router in your main app:
 
 import os
 import re
-import sqlite3
 import logging
-from pathlib import Path
 from typing import Optional, Any
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from config import env, env_path
+from config import env
+from db import DB_BACKEND, format_db_target, get_db, get_table_columns
 
 log = logging.getLogger(__name__)
 
@@ -37,42 +36,34 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 OMDB_API_KEY = env("OMDB_API_KEY", "MOVIEBUZZ_OMDB_API_KEY", default="")
 OMDB_BASE    = "https://www.omdbapi.com/"
-DB_PATH      = env_path(
-    "DATABASE_URL",
-    "DB_PATH",
-    "MOVIEBUZZ_DB_PATH",
-    default=Path(__file__).resolve().parent / "moviebuzz.db",
-)
+DB_PATH      = format_db_target()
 
 router = APIRouter(prefix="/api", tags=["trailer"])
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  DB helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _get_conn() -> sqlite3.Connection:
-    import os
+def _get_conn():
+    return get_db()
 
-    db_dir = os.path.dirname(str(DB_PATH)) or "."
-    os.makedirs(db_dir, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+
+def _trailer_schema_sql() -> str:
+    return """
+        CREATE TABLE IF NOT EXISTS trailer_cache (
+            movie_id   INTEGER PRIMARY KEY,
+            imdb_id    TEXT,
+            title      TEXT,
+            year       TEXT,
+            video_id   TEXT,
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """
 
 
 def _ensure_trailer_table():
     """Create trailer_cache table if it doesn't exist yet."""
     with _get_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trailer_cache (
-                movie_id   INTEGER PRIMARY KEY,
-                imdb_id    TEXT,
-                title      TEXT,
-                year       TEXT,
-                video_id   TEXT,          -- YouTube video ID (null if not found)
-                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
+        conn.execute(_trailer_schema_sql())
 
 
 _ensure_trailer_table()
@@ -80,8 +71,7 @@ _ensure_trailer_table()
 
 def _movie_table_columns() -> set[str]:
     with _get_conn() as conn:
-        rows = conn.execute("PRAGMA table_info(movies)").fetchall()
-    return {str(row["name"]) for row in rows}
+        return get_table_columns(conn, "movies")
 
 
 def _get_movie_lookup(movie_id: int) -> Optional[dict[str, Any]]:
@@ -285,11 +275,16 @@ async def get_trailer(movie_id: int):
     # ── 5. Cache result ───────────────────────────────────────────────────────
     with _get_conn() as conn:
         conn.execute("""
-            INSERT OR REPLACE INTO trailer_cache
+            INSERT INTO trailer_cache
                 (movie_id, imdb_id, title, year, video_id)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(movie_id) DO UPDATE SET
+                imdb_id = excluded.imdb_id,
+                title = excluded.title,
+                year = excluded.year,
+                video_id = excluded.video_id,
+                fetched_at = CURRENT_TIMESTAMP
         """, (movie_id, imdb_id, clean_title, year, video_id))
-        conn.commit()
 
     return TrailerResponse(
         movie_id  = movie_id,

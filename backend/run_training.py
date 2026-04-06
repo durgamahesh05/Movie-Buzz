@@ -48,6 +48,14 @@ from sklearn.preprocessing import MinMaxScaler
 
 from config import env_path
 
+# ── Paths ─────────────────────────────────────────────────────────────────────
+BASE_DIR  = Path(__file__).resolve().parent
+DATA_DIR  = BASE_DIR / "data"
+MODEL_DIR = BASE_DIR / "models"
+LOG_PATH  = BASE_DIR / "training.log"
+DB_PATH   = env_path("DATABASE_URL", "DB_PATH", "MOVIEBUZZ_DB_PATH", default=BASE_DIR / "moviebuzz.db")
+MODEL_DIR.mkdir(exist_ok=True)
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -55,17 +63,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("training.log", encoding="utf-8"),
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
     ],
 )
 log = logging.getLogger("run_training")
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_DIR  = Path(__file__).parent
-DATA_DIR  = BASE_DIR / "data"
-MODEL_DIR = BASE_DIR / "models"
-DB_PATH   = env_path("DATABASE_URL", "DB_PATH", "MOVIEBUZZ_DB_PATH", default=BASE_DIR / "moviebuzz.db")
-MODEL_DIR.mkdir(exist_ok=True)
 
 # ── Tunable sample sizes (reduce for faster runs, increase for accuracy) ──────
 CHUNK              = 500_000      # rows per CSV chunk
@@ -195,10 +196,6 @@ class XGBModelBundle:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _coerce_int(value: Any) -> int:
-    return int(value)
 
 
 _GPU_CHECK_COMPLETE = False
@@ -521,7 +518,7 @@ def load_and_aggregate() -> pd.DataFrame:
             log.info("  … processed %d M rows", total_rows // 1_000_000)
 
         for mid, grp in chunk.groupby("movieId"):
-            mid = _coerce_int(mid)
+            mid = int(mid)
             sum_d[mid]       = sum_d.get(mid, 0.0)  + float(grp["rating"].sum())
             sum_sq_d[mid]    = sum_sq_d.get(mid, 0.0) + float(grp["rating_sq"].sum())
             cnt_d[mid]       = cnt_d.get(mid, 0)    + len(grp)
@@ -600,7 +597,7 @@ def load_tags(movies_df: pd.DataFrame) -> pd.DataFrame:
                     text   = " ".join(grp["tag"].tolist())
                     weight = len(grp)
                     polarity = TextBlob(text).sentiment.polarity
-                    mid = _coerce_int(mid)
+                    mid = int(mid)
                     sentiment_sum[mid] = sentiment_sum.get(mid, 0.0) + polarity * weight
                     sentiment_cnt[mid] = sentiment_cnt.get(mid, 0)   + weight
 
@@ -986,7 +983,7 @@ def _global_rating_reference_timestamp() -> int:
         except Exception:
             row = None
     if row and row[0]:
-        return _coerce_int(row[0])
+        return int(row[0])
 
     max_ts = 0
     for candidate_path in (DATA_DIR / "train.csv", DATA_DIR / "ratings.csv"):
@@ -1036,14 +1033,14 @@ def _load_user_feature_frame(
                 and cached_tag_columns == tag_feature_columns
             ):
                 genre_affinity_map = {
-                    _coerce_int(user_id): {
+                    int(user_id): {
                         str(token): float(score)
                         for token, score in dict(scores).items()
                     }
                     for user_id, scores in dict(cached.get("genre_affinity_map") or {}).items()
                 }
                 tag_profile_map = {
-                    _coerce_int(user_id): np.asarray(vector, dtype=np.float32)
+                    int(user_id): np.asarray(vector, dtype=np.float32)
                     for user_id, vector in dict(cached.get("tag_profile_map") or {}).items()
                 }
                 return cached_df, genre_affinity_map, tag_profile_map
@@ -1088,13 +1085,8 @@ def _load_user_feature_frame(
     for chunk in pd.read_csv(
         train_path,
         chunksize=CHUNK,
-        usecols=["userId", "movieId", "rating", "timestamp"],
-        dtype={
-            "userId": np.int32,
-            "movieId": np.int32,
-            "rating": np.float32,
-            "timestamp": np.int32,
-        },
+        usecols=["userId", "rating", "timestamp"],
+        dtype={"userId": np.int32, "rating": np.float32, "timestamp": np.int32},
     ):
         chunk["rating_sq"] = np.square(chunk["rating"].to_numpy(dtype=np.float32))
         grouped = chunk.groupby("userId").agg(
@@ -1104,7 +1096,7 @@ def _load_user_feature_frame(
             latest_ts=("timestamp", "max"),
         )
         for user_id, row in grouped.iterrows():
-            uid = _coerce_int(user_id)
+            uid = int(user_id)
             rating_sum[uid] = rating_sum.get(uid, 0.0) + float(row["rating_sum"])
             rating_sq_sum[uid] = rating_sq_sum.get(uid, 0.0) + float(row["rating_sq_sum"])
             rating_count[uid] = rating_count.get(uid, 0) + int(row["rating_count"])
@@ -1122,7 +1114,7 @@ def _load_user_feature_frame(
                 prior_90=("prior_90", "sum"),
             )
             for user_id, row in trend_grouped.iterrows():
-                uid = _coerce_int(user_id)
+                uid = int(user_id)
                 recent_30_count[uid] += int(row["recent_30"])
                 prior_90_count[uid] += int(row["prior_90"])
 
@@ -1140,7 +1132,7 @@ def _load_user_feature_frame(
                     rating_count=("rating", "size"),
                 )
                 for (user_id, genre_name), row in user_genre_grouped.iterrows():
-                    uid = _coerce_int(user_id)
+                    uid = int(user_id)
                     genre_label = str(genre_name)
                     user_genre_sum[uid][genre_label] = (
                         user_genre_sum[uid].get(genre_label, 0.0) + float(row["rating_sum"])
@@ -1175,7 +1167,7 @@ def _load_user_feature_frame(
                 weighted_tag_frame["_tag_weight"] = weights
                 grouped_tags = weighted_tag_frame.groupby("userId").sum()
                 for user_id, row in grouped_tags.iterrows():
-                    uid = _coerce_int(user_id)
+                    uid = int(user_id)
                     tag_vector = row[tag_feature_columns].to_numpy(dtype=np.float32, copy=True)
                     existing_vector = user_tag_sum.get(uid)
                     if existing_vector is None:
@@ -1211,33 +1203,33 @@ def _load_user_feature_frame(
 
     user_ids = np.array(list(rating_count.keys()), dtype=np.int32)
     recency_days = np.array([
-        max(0.0, (max_ts - latest_ts[_coerce_int(uid)]) / 86400.0)
+        max(0.0, (max_ts - latest_ts[int(uid)]) / 86400.0)
         if max_ts > 0 else 0.0
         for uid in user_ids
     ], dtype=np.float32)
     recent_rates = np.array(
-        [recent_30_count.get(_coerce_int(uid), 0) for uid in user_ids],
+        [recent_30_count.get(int(uid), 0) for uid in user_ids],
         dtype=np.float32,
     )
     prior_rates = np.array(
-        [prior_90_count.get(_coerce_int(uid), 0) for uid in user_ids],
+        [prior_90_count.get(int(uid), 0) for uid in user_ids],
         dtype=np.float32,
     )
     user_df = pd.DataFrame({
         "userId": user_ids,
         "user_activity_level": np.log1p(
-            np.array([rating_count[_coerce_int(uid)] for uid in user_ids], dtype=np.float32)
+            np.array([rating_count[int(uid)] for uid in user_ids], dtype=np.float32)
         ),
         "user_avg_rating": np.array([
-            rating_sum[_coerce_int(uid)] / max(1, rating_count[_coerce_int(uid)])
+            rating_sum[int(uid)] / max(1, rating_count[int(uid)])
             for uid in user_ids
         ], dtype=np.float32),
         "user_rating_std": np.array([
             float(
                 np.sqrt(
                     max(
-                        (rating_sq_sum[_coerce_int(uid)] / max(1, rating_count[_coerce_int(uid)]))
-                        - ((rating_sum[_coerce_int(uid)] / max(1, rating_count[_coerce_int(uid)])) ** 2),
+                        (rating_sq_sum[int(uid)] / max(1, rating_count[int(uid)]))
+                        - ((rating_sum[int(uid)] / max(1, rating_count[int(uid)])) ** 2),
                         0.0,
                     )
                 )
@@ -1269,14 +1261,14 @@ def _load_user_feature_frame(
                 np.clip((user_mean - global_mean) / 2.5, -1.5, 1.5)
             )
         if affinity_payload:
-            genre_affinity_map[_coerce_int(user_id)] = affinity_payload
+            genre_affinity_map[int(user_id)] = affinity_payload
 
     tag_profile_map: dict[int, np.ndarray] = {}
     for user_id, tag_sum_vector in user_tag_sum.items():
         total_weight = max(float(user_tag_weight.get(user_id, 0.0)), 1e-6)
         profile = np.asarray(tag_sum_vector / total_weight, dtype=np.float32)
         norm = float(np.linalg.norm(profile))
-        tag_profile_map[_coerce_int(user_id)] = (
+        tag_profile_map[int(user_id)] = (
             profile / norm if norm > 0 else profile
         ).astype(np.float32)
 
@@ -1350,7 +1342,7 @@ def _load_genome_feature_frame(train_path: Path) -> pd.DataFrame:
                     """,
                     conn,
                 )
-                top_tag_ids = [_coerce_int(tag_id) for tag_id in top_tags.get("tagId", pd.Series(dtype=np.int32)).tolist()]
+                top_tag_ids = [int(tag_id) for tag_id in top_tags.get("tagId", pd.Series(dtype=np.int32)).tolist()]
                 if top_tag_ids:
                     placeholders = ",".join("?" for _ in top_tag_ids)
                     top_tag_rows = pd.read_sql_query(
@@ -1370,7 +1362,7 @@ def _load_genome_feature_frame(train_path: Path) -> pd.DataFrame:
                             fill_value=0.0,
                         )
                         top_tag_pivot.columns = [
-                            f"genome_tag_{_coerce_int(tag_id)}"
+                            f"genome_tag_{int(tag_id)}"
                             for tag_id in top_tag_pivot.columns
                         ]
                         genome_df = genome_df.merge(
@@ -1417,10 +1409,10 @@ def _load_genome_feature_frame(train_path: Path) -> pd.DataFrame:
                 ].sum()
             )
             for row in grouped_popularity.itertuples(index=False):
-                mid = _coerce_int(row.movieId)
-                popularity_decay[mid] += float(row.item_popularity_decay)
-                recent_count[mid] += float(row.recent_count)
-                prior_count[mid] += float(row.prior_count)
+                mid = int(np.asarray(row.movieId).item())
+                popularity_decay[mid] += float(np.asarray(row.item_popularity_decay).item())
+                recent_count[mid] += float(np.asarray(row.recent_count).item())
+                prior_count[mid] += float(np.asarray(row.prior_count).item())
 
     popularity_df = pd.DataFrame(
         {
@@ -1474,7 +1466,7 @@ def _load_movie_sbert_embeddings() -> dict[int, np.ndarray]:
             payload = pickle.load(f)
         if isinstance(payload, dict):
             return {
-                _coerce_int(movie_id): np.asarray(embedding, dtype=np.float32)
+                int(movie_id): np.asarray(embedding, dtype=np.float32)
                 for movie_id, embedding in payload.items()
             }
 
@@ -1508,7 +1500,7 @@ def _load_movie_sbert_embeddings() -> dict[int, np.ndarray]:
         normalize_embeddings=True,
     ).astype(np.float32)
     payload = {
-        _coerce_int(movie_id): embeddings[idx]
+        int(movie_id): embeddings[idx]
         for idx, movie_id in enumerate(movies_df["movieId"].tolist())
     }
     with open(MOVIE_SBERT_EMBEDDINGS_PATH, "wb") as f:
@@ -1526,7 +1518,7 @@ def _load_user_taste_vectors(
             id_map = pickle.load(f)
         if isinstance(id_map, dict):
             return matrix, {
-                _coerce_int(user_id): _coerce_int(row_idx)
+                int(user_id): int(row_idx)
                 for user_id, row_idx in id_map.items()
             }
 
@@ -1546,11 +1538,11 @@ def _load_user_taste_vectors(
     ):
         liked = chunk[chunk["rating"] >= 4.0]
         for row in liked.itertuples(index=False):
-            movie_id = _coerce_int(row.movieId)
+            movie_id = int(row.movieId)
             embedding = movie_embeddings.get(movie_id)
             if embedding is None:
                 continue
-            user_id = _coerce_int(row.userId)
+            user_id = int(row.userId)
             current = user_vec_sum.get(user_id)
             if current is None:
                 current = np.zeros(embedding_dim, dtype=np.float32)
@@ -1590,8 +1582,8 @@ def _predict_sbert_scores(
 
     scores = np.zeros(len(user_ids), dtype=np.float32)
     for idx, (uid, mid) in enumerate(zip(user_ids, movie_ids)):
-        taste_idx = user_taste_id_map.get(_coerce_int(uid))
-        movie_embedding = movie_embeddings.get(_coerce_int(mid))
+        taste_idx = user_taste_id_map.get(int(uid))
+        movie_embedding = movie_embeddings.get(int(mid))
         if taste_idx is None or movie_embedding is None:
             continue
         if taste_idx >= len(user_taste_vectors):
@@ -1604,7 +1596,7 @@ def _predict_svd_scores(svd_model: Any, user_ids: np.ndarray, movie_ids: np.ndar
     if svd_model is None:
         return np.zeros(len(user_ids), dtype=np.float32)
     preds = [
-        float(svd_model.predict(_coerce_int(uid), _coerce_int(mid)).est) / 5.0
+        float(svd_model.predict(int(uid), int(mid)).est) / 5.0
         for uid, mid in zip(user_ids, movie_ids)
     ]
     return np.clip(np.asarray(preds, dtype=np.float32), 0.0, 1.0)
@@ -1620,8 +1612,8 @@ def _predict_als_scores(
     if als_model is None or not item_ids or not user_ids_lookup:
         return np.zeros(len(user_ids), dtype=np.float32)
 
-    item_index = {_coerce_int(mid): idx for idx, mid in enumerate(item_ids)}
-    user_index = {_coerce_int(uid): idx for idx, uid in enumerate(user_ids_lookup)}
+    item_index = {int(mid): idx for idx, mid in enumerate(item_ids)}
+    user_index = {int(uid): idx for idx, uid in enumerate(user_ids_lookup)}
     item_factors = getattr(als_model, "item_factors", None)
     user_factors = getattr(als_model, "user_factors", None)
     if item_factors is None or user_factors is None:
@@ -1629,8 +1621,8 @@ def _predict_als_scores(
 
     raw_scores = np.zeros(len(user_ids), dtype=np.float32)
     for idx, (uid, mid) in enumerate(zip(user_ids, movie_ids)):
-        u_idx = user_index.get(_coerce_int(uid))
-        i_idx = item_index.get(_coerce_int(mid))
+        u_idx = user_index.get(int(uid))
+        i_idx = item_index.get(int(mid))
         if u_idx is None or i_idx is None:
             continue
         if u_idx >= len(user_factors) or i_idx >= len(item_factors):
@@ -1653,13 +1645,13 @@ def _predict_ncf_scores(
     valid_positions = [
         idx
         for idx, (uid, mid) in enumerate(zip(user_ids, movie_ids))
-        if _coerce_int(uid) in user_enc and _coerce_int(mid) in item_enc
+        if int(uid) in user_enc and int(mid) in item_enc
     ]
     if not valid_positions:
         return scores
 
-    u_arr = np.array([user_enc[_coerce_int(user_ids[idx])] for idx in valid_positions], dtype=np.int32)
-    i_arr = np.array([item_enc[_coerce_int(movie_ids[idx])] for idx in valid_positions], dtype=np.int32)
+    u_arr = np.array([user_enc[int(user_ids[idx])] for idx in valid_positions], dtype=np.int32)
+    i_arr = np.array([item_enc[int(movie_ids[idx])] for idx in valid_positions], dtype=np.int32)
     preds = ncf_model.predict([u_arr, i_arr], batch_size=8192, verbose=0).flatten()
     scores[np.array(valid_positions, dtype=np.int32)] = np.clip(
         preds.astype(np.float32),
@@ -1792,7 +1784,7 @@ def _build_xgb_feature_frame(
     )
     genre_affinity_scores = np.zeros(len(user_ids), dtype=np.float32)
     for idx, (uid, genres) in enumerate(zip(user_ids, genre_sets.tolist())):
-        affinity_map = user_genre_affinity_map.get(_coerce_int(uid))
+        affinity_map = user_genre_affinity_map.get(int(uid))
         if not affinity_map:
             continue
         affinity_values = [
@@ -1810,7 +1802,7 @@ def _build_xgb_feature_frame(
         movie_tag_matrix = df[tag_feature_columns].fillna(0).to_numpy(dtype=np.float32)
         movie_tag_norms = np.linalg.norm(movie_tag_matrix, axis=1)
         for idx, uid in enumerate(user_ids):
-            tag_profile = user_tag_profile_map.get(_coerce_int(uid))
+            tag_profile = user_tag_profile_map.get(int(uid))
             if tag_profile is None or movie_tag_norms[idx] <= 0:
                 continue
             movie_vector = movie_tag_matrix[idx]
@@ -1854,7 +1846,7 @@ def _build_xgb_feature_context(
         if column_name != "userId"
     ]
     user_stats = {
-        _coerce_int(row["userId"]): {
+        int(row["userId"]): {
             column_name: float(row[column_name])
             for column_name in user_feature_columns
         }
@@ -1866,7 +1858,7 @@ def _build_xgb_feature_context(
         if column_name != "movieId"
     ]
     movie_stats = {
-        _coerce_int(row["movieId"]): {
+        int(row["movieId"]): {
             column_name: float(row[column_name])
             for column_name in movie_feature_columns
         }
@@ -1881,14 +1873,14 @@ def _build_xgb_feature_context(
         "user_stats": user_stats,
         "movie_stats": movie_stats,
         "user_genre_affinity": {
-            _coerce_int(user_id): {
+            int(user_id): {
                 str(genre_name): float(score)
                 for genre_name, score in affinity_map.items()
             }
             for user_id, affinity_map in user_genre_affinity_map.items()
         },
         "user_tag_profiles": {
-            _coerce_int(user_id): np.asarray(tag_profile, dtype=np.float32)
+            int(user_id): np.asarray(tag_profile, dtype=np.float32)
             for user_id, tag_profile in user_tag_profile_map.items()
         },
     }
@@ -2193,8 +2185,8 @@ def train_als(train_path: Path) -> Tuple[Any, list, list]:
     )
     model.fit(mat)
 
-    item_ids = [_coerce_int(x) for x in items_.categories]
-    user_ids = [_coerce_int(x) for x in users_.categories]
+    item_ids = [int(x) for x in items_.categories]
+    user_ids = [int(x) for x in users_.categories]
 
     with open(als_path, "wb") as f:
         pickle.dump({"model": model, "item_ids": item_ids, "user_ids": user_ids}, f)
@@ -2273,11 +2265,11 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
     )
 
     log.info("Generating %dx popularity-weighted hard negatives …", NEG_RATIO)
-    item_pool = np.asarray(sorted({_coerce_int(x) for x in all_item_ids}), dtype=np.int32)
-    item_pool_set = set(_coerce_int(x) for x in item_pool.tolist())
+    item_pool = np.asarray(sorted({int(x) for x in all_item_ids}), dtype=np.int32)
+    item_pool_set = set(int(x) for x in item_pool.tolist())
     user_items: Dict[int, set[int]] = {}
     for uid, mid in zip(interaction_df["userId"], interaction_df["movieId"]):
-        user_items.setdefault(_coerce_int(uid), set()).add(_coerce_int(mid))
+        user_items.setdefault(int(uid), set()).add(int(mid))
 
     with get_db() as conn:
         item_weight_rows = conn.execute(
@@ -2287,11 +2279,11 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
             """
         ).fetchall()
     popularity_lookup = {
-        _coerce_int(row[0]): float(max(float(row[1] or 0), 1.0)) * (1.0 + float(row[2] or 0.0))
+        int(row[0]): float(max(float(row[1] or 0), 1.0)) * (1.0 + float(row[2] or 0.0))
         for row in item_weight_rows
     }
     popularity_weights = np.array(
-        [np.sqrt(popularity_lookup.get(_coerce_int(movie_id), 1.0)) for movie_id in item_pool],
+        [np.sqrt(popularity_lookup.get(int(movie_id), 1.0)) for movie_id in item_pool],
         dtype=np.float64,
     )
     popularity_weights /= popularity_weights.sum()
@@ -2300,7 +2292,7 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
     rng = np.random.default_rng(42)
 
     for row in pos_df.itertuples(index=False):
-        uid = _coerce_int(row.userId)
+        uid = int(row.userId)
         seen = user_items.get(uid, set())
         sampled_negatives: list[int] = []
         sampled_set: set[int] = set()
@@ -2316,8 +2308,8 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
             for mid in draws.tolist():
                 if mid in seen or mid in sampled_set:
                     continue
-                sampled_set.add(_coerce_int(mid))
-                sampled_negatives.append(_coerce_int(mid))
+                sampled_set.add(int(mid))
+                sampled_negatives.append(int(mid))
                 if len(sampled_negatives) >= NEG_RATIO:
                     break
             draw_rounds += 1
@@ -2327,7 +2319,7 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
             if unseen_candidates:
                 take = min(NEG_RATIO - len(sampled_negatives), len(unseen_candidates))
                 sampled_negatives.extend(
-                    _coerce_int(mid)
+                    int(mid)
                     for mid in rng.choice(
                         np.asarray(unseen_candidates, dtype=np.int32),
                         size=take,
@@ -2336,10 +2328,10 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
                 )
 
         for mid in sampled_negatives:
-            popularity_weight = float(np.sqrt(popularity_lookup.get(_coerce_int(mid), 1.0)))
+            popularity_weight = float(np.sqrt(popularity_lookup.get(int(mid), 1.0)))
             neg_rows.append({
                 "userId": uid,
-                "movieId": _coerce_int(mid),
+                "movieId": int(mid),
                 "label": 0.0,
                 "sample_weight": float(np.clip(0.9 + (0.1 * popularity_weight), 0.9, 1.5)),
             })
@@ -2357,8 +2349,8 @@ def train_ncf(train_path: Path, all_item_ids: np.ndarray) -> Tuple[Any, dict, di
 
     users_u  = ncf_df["userId"].unique()
     items_u  = ncf_df["movieId"].unique()
-    user_enc = {_coerce_int(u): i for i, u in enumerate(users_u)}
-    item_enc = {_coerce_int(m): i for i, m in enumerate(items_u)}
+    user_enc = {int(u): i for i, u in enumerate(users_u)}
+    item_enc = {int(m): i for i, m in enumerate(items_u)}
 
     ncf_df["u_enc"] = ncf_df["userId"].map(user_enc)
     ncf_df["i_enc"] = ncf_df["movieId"].map(item_enc)
@@ -2914,14 +2906,14 @@ def evaluate_and_report(
             user_stats_map = dict(xgb_feature_context.get("user_stats") or {})
             movie_stats_map = dict(xgb_feature_context.get("movie_stats") or {})
             user_genre_affinity_map = {
-                _coerce_int(user_id): {
+                int(user_id): {
                     str(genre_name): float(score)
                     for genre_name, score in dict(affinity_map).items()
                 }
                 for user_id, affinity_map in dict(xgb_feature_context.get("user_genre_affinity") or {}).items()
             }
             user_tag_profile_map = {
-                _coerce_int(user_id): np.asarray(tag_profile, dtype=np.float32)
+                int(user_id): np.asarray(tag_profile, dtype=np.float32)
                 for user_id, tag_profile in dict(xgb_feature_context.get("user_tag_profiles") or {}).items()
             }
             user_feature_columns = list(
@@ -2947,13 +2939,13 @@ def evaluate_and_report(
             )
             user_feature_df = pd.DataFrame(
                 [
-                    {"userId": _coerce_int(uid), **stats}
+                    {"userId": int(uid), **stats}
                     for uid, stats in user_stats_map.items()
                 ]
             )
             movie_feature_df = pd.DataFrame(
                 [
-                    {"movieId": _coerce_int(mid), **stats}
+                    {"movieId": int(mid), **stats}
                     for mid, stats in movie_stats_map.items()
                 ]
             )

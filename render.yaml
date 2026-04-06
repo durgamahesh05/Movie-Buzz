@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: moviebuzz-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_PROJECT_REF
+        value: helgktwlzbrjjnrpqyoz
+      - key: SUPABASE_DB_PASSWORD
+        sync: false
+      - key: SUPABASE_DB_HOST
+        value: db.helgktwlzbrjjnrpqyoz.supabase.co
+      - key: SUPABASE_DB_PORT
+        value: "5432"
+      - key: SUPABASE_DB_USER
+        value: postgres
+      - key: SUPABASE_DB_NAME
+        value: postgres
+      - key: SUPABASE_DB_SSLMODE
+        value: require
+      - key: MOVIEBUZZ_SKIP_STARTUP
+        value: "0"
+      - key: MOVIEBUZZ_WARM_ENGINE
+        value: "0"
+      - key: OMDB_API_KEY
+        sync: false
+      - key: TMDB_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SSL_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: MOVIEBUZZ_SYSTEM_ADMIN_ACCOUNTS_JSON
+        sync: false

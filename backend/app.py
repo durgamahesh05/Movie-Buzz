@@ -54,9 +54,33 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MovieBuzz API", version="3.0", lifespan=lifespan)
 
+# Configure CORS based on environment
+CORS_ORIGINS = [
+    "http://localhost:3000",      # Frontend local dev (Next.js default)
+    "http://localhost:5173",      # Frontend local dev (Vite default)
+    "http://localhost:8000",      # Backend local
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+]
+
+# Add production URLs
+production_frontend = os.getenv("FRONTEND_URL")
+if production_frontend:
+    CORS_ORIGINS.append(production_frontend)
+if os.getenv("RENDER") or os.getenv("FLY"):  # Render/Fly deployment detected
+    CORS_ORIGINS.extend([
+        "https://moviebuzz-frontend.onrender.com",
+        "https://moviebuzz-frontend.fly.dev",
+    ])
+
+# Development: Allow all origins for easier testing
+if os.getenv("MOVIEBUZZ_DEV"):
+    CORS_ORIGINS = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -300,15 +324,19 @@ def home_movies(
 @app.get("/admin/overview")
 def admin_overview():
     with get_user_db() as conn:
-        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        verified_users = conn.execute(
+        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        total_users = total_users[0] if total_users else 0
+        verified_result = conn.execute(
             "SELECT COUNT(*) FROM users WHERE verified = 1"
-        ).fetchone()[0]
-        wishlist_items = conn.execute("SELECT COUNT(*) FROM wishlist").fetchone()[0]
+        ).fetchone()
+        verified_users = verified_result[0] if verified_result else 0
+        wishlist_result = conn.execute("SELECT COUNT(*) FROM wishlist").fetchone()
+        wishlist_items = wishlist_result[0] if wishlist_result else 0
 
     try:
         with get_movie_db() as conn:
-            catalog_movies = conn.execute("SELECT COUNT(*) FROM movies").fetchone()[0]
+            catalog_result = conn.execute("SELECT COUNT(*) FROM movies").fetchone()
+            catalog_movies = catalog_result[0] if catalog_result else 0
     except Exception:
         catalog_movies = 0
 

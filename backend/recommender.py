@@ -19,7 +19,7 @@ import importlib
 import importlib.util
 import io
 import json
-import os, re, sqlite3, pickle, logging, requests
+import os, re, pickle, logging, requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from difflib import SequenceMatcher, get_close_matches
@@ -33,7 +33,8 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
-from config import env, env_path
+from config import env
+from db import DB_BACKEND, format_db_target, get_db as open_db, is_postgres, read_sql_df
 from user_model import get_preferences as get_user_preferences
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger("recommender")
@@ -197,7 +198,7 @@ HAS_SURPRISE = surprise is not None
 BASE_DIR  = Path(__file__).parent
 DATA_DIR  = _resolve_data_dir(BASE_DIR)
 MODEL_DIR = BASE_DIR / "models"
-DB_PATH   = env_path("DATABASE_URL", "DB_PATH", "MOVIEBUZZ_DB_PATH", default=BASE_DIR / "moviebuzz.db")
+DB_PATH   = format_db_target()
 MODEL_DIR.mkdir(exist_ok=True)
 
 RATING_CHUNK = 500_000
@@ -1163,71 +1164,79 @@ def _load_ncf_artifacts() -> tuple[Any, dict[int, int], dict[int, int]] | None:
 #  DATABASE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_db() -> sqlite3.Connection:
-    import os
+def get_db():
+    return open_db()
 
-    db_dir = os.path.dirname(str(DB_PATH)) or "."
-    os.makedirs(db_dir, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+
+def _recommender_schema_sql() -> str:
+    return """
+        CREATE TABLE IF NOT EXISTS movies (
+            movieId         INTEGER PRIMARY KEY,
+            title           TEXT NOT NULL,
+            genres          TEXT DEFAULT '',
+            avg_rating      REAL DEFAULT 0,
+            num_ratings     INTEGER DEFAULT 0,
+            sentiment_score REAL DEFAULT 0,
+            trending_score  REAL DEFAULT 0,
+            poster          TEXT DEFAULT '',
+            source          TEXT DEFAULT 'ml25m'
+        );
+        CREATE TABLE IF NOT EXISTS tags (
+            movieId INTEGER,
+            tag TEXT,
+            FOREIGN KEY(movieId) REFERENCES movies(movieId)
+        );
+        CREATE TABLE IF NOT EXISTS genome_scores (
+            movieId INTEGER,
+            tagId INTEGER,
+            relevance REAL,
+            PRIMARY KEY (movieId, tagId)
+        );
+        CREATE TABLE IF NOT EXISTS omdb_cache (
+            title TEXT PRIMARY KEY,
+            poster TEXT DEFAULT '',
+            plot TEXT DEFAULT '',
+            "cast" TEXT DEFAULT '',
+            director TEXT DEFAULT '',
+            imdb_rating TEXT DEFAULT '',
+            runtime TEXT DEFAULT '',
+            fetched_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS user_feedback (
+            user_id TEXT NOT NULL,
+            movieId INTEGER NOT NULL,
+            feedback TEXT CHECK(feedback IN ('like','dislike','neutral')),
+            ts TEXT DEFAULT '',
+            PRIMARY KEY (user_id, movieId)
+        );
+        CREATE TABLE IF NOT EXISTS rating_timestamps (
+            movieId INTEGER PRIMARY KEY,
+            latest_ts INTEGER DEFAULT 0,
+            num_recent INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS model_metrics (
+            run_id TEXT PRIMARY KEY,
+            model TEXT,
+            bce_loss REAL,
+            bpr_loss REAL,
+            mse REAL,
+            ndcg_10 REAL,
+            auc REAL,
+            ts TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);
+        CREATE INDEX IF NOT EXISTS idx_movies_title_lower ON movies(lower(title));
+        CREATE INDEX IF NOT EXISTS idx_movies_genres_lower ON movies(lower(genres));
+        CREATE INDEX IF NOT EXISTS idx_movies_home_sort
+            ON movies(num_ratings DESC, trending_score DESC, avg_rating DESC, title ASC);
+        CREATE INDEX IF NOT EXISTS idx_tags_mid ON tags(movieId);
+        CREATE INDEX IF NOT EXISTS idx_genome_mid ON genome_scores(movieId);
+    """
 
 
 def init_db():
     with get_db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS movies (
-                movieId         INTEGER PRIMARY KEY,
-                title           TEXT NOT NULL,
-                genres          TEXT DEFAULT '',
-                avg_rating      REAL DEFAULT 0,
-                num_ratings     INTEGER DEFAULT 0,
-                sentiment_score REAL DEFAULT 0,
-                trending_score  REAL DEFAULT 0,
-                poster          TEXT DEFAULT '',
-                source          TEXT DEFAULT 'ml25m'
-            );
-            CREATE TABLE IF NOT EXISTS tags (
-                movieId INTEGER, tag TEXT,
-                FOREIGN KEY(movieId) REFERENCES movies(movieId)
-            );
-            CREATE TABLE IF NOT EXISTS genome_scores (
-                movieId INTEGER, tagId INTEGER, relevance REAL,
-                PRIMARY KEY (movieId, tagId)
-            );
-            CREATE TABLE IF NOT EXISTS omdb_cache (
-                title TEXT PRIMARY KEY,
-                poster TEXT DEFAULT '', plot TEXT DEFAULT '',
-                "cast" TEXT DEFAULT '', director TEXT DEFAULT '',
-                imdb_rating TEXT DEFAULT '', runtime TEXT DEFAULT '',
-                fetched_at TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS user_feedback (
-                user_id TEXT NOT NULL, movieId INTEGER NOT NULL,
-                feedback TEXT CHECK(feedback IN ('like','dislike','neutral')),
-                ts TEXT DEFAULT '',
-                PRIMARY KEY (user_id, movieId)
-            );
-            CREATE TABLE IF NOT EXISTS rating_timestamps (
-                movieId INTEGER PRIMARY KEY,
-                latest_ts INTEGER DEFAULT 0,
-                num_recent INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS model_metrics (
-                run_id TEXT PRIMARY KEY,
-                model TEXT, bce_loss REAL, bpr_loss REAL,
-                mse REAL, ndcg_10 REAL, auc REAL,
-                ts TEXT DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);
-            CREATE INDEX IF NOT EXISTS idx_movies_title_lower ON movies(lower(title));
-            CREATE INDEX IF NOT EXISTS idx_movies_genres_lower ON movies(lower(genres));
-            CREATE INDEX IF NOT EXISTS idx_movies_home_sort
-                ON movies(num_ratings DESC, trending_score DESC, avg_rating DESC, title ASC);
-            CREATE INDEX IF NOT EXISTS idx_tags_mid    ON tags(movieId);
-            CREATE INDEX IF NOT EXISTS idx_genome_mid  ON genome_scores(movieId);
-        """)
+        conn.executescript(_recommender_schema_sql())
     log.info("DB ready: %s", DB_PATH)
     # Migrate: clear old hardcoded placeholder poster strings so real ones get fetched
     try:
@@ -1257,9 +1266,16 @@ def init_db():
 
 def load_ml25m_to_db():
     with get_db() as conn:
-        if conn.execute("SELECT COUNT(*) FROM movies").fetchone()[0] > 0:
+        count_result = conn.execute("SELECT COUNT(*) FROM movies").fetchone()
+        if (count_result and count_result[0] > 0):
             log.info("DB already populated – skipping ML25M import")
             return
+
+    if is_postgres():
+        raise RuntimeError(
+            "Postgres database is empty. Import or migrate the MovieBuzz data "
+            "into Supabase before starting the API."
+        )
 
     movies_path        = DATA_DIR / "movies.csv"
     ratings_path       = DATA_DIR / "ratings.csv"
@@ -1504,7 +1520,7 @@ def _latest_model_metrics_from_db() -> dict[str, Any]:
                 """
                 SELECT run_id, model, bce_loss, bpr_loss, mse, ndcg_10, auc, ts
                 FROM model_metrics
-                ORDER BY datetime(ts) DESC, ts DESC, run_id DESC
+                ORDER BY ts DESC, run_id DESC
                 LIMIT 1
                 """
             ).fetchone()
@@ -1711,7 +1727,7 @@ class RecommenderEngine:
     def _build(self):
         log.info("Building engine …")
         with get_db() as conn:
-            self.movies_df = pd.read_sql("SELECT * FROM movies", conn)
+            self.movies_df = read_sql_df(conn, "SELECT * FROM movies")
         if self.movies_df.empty:
             log.warning("No movies in DB")
             return
@@ -1741,16 +1757,25 @@ class RecommenderEngine:
     def _build_tfidf(self):
         log.info("Building TF-IDF …")
         with get_db() as conn:
-            if conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0] > 0:
-                tags_agg = pd.read_sql(
-                    "SELECT movieId, GROUP_CONCAT(tag,' ') AS tag_text "
-                    "FROM tags GROUP BY movieId", conn)
+            tag_agg_sql = (
+                "SELECT movieId, string_agg(tag, ' ') AS tag_text "
+                "FROM tags GROUP BY movieId"
+                if DB_BACKEND == "postgres"
+                else
+                "SELECT movieId, GROUP_CONCAT(tag,' ') AS tag_text "
+                "FROM tags GROUP BY movieId"
+            )
+            tags_count_result = conn.execute("SELECT COUNT(*) FROM tags").fetchone()
+            if tags_count_result and tags_count_result[0] > 0:
+                tags_agg = read_sql_df(conn, tag_agg_sql)
                 self.movies_df = self.movies_df.merge(tags_agg, on="movieId", how="left")
             self.movies_df["tag_text"] = self.movies_df.get("tag_text",
                 pd.Series("", index=self.movies_df.index)).fillna("")
 
-            plots = pd.read_sql(
-                'SELECT title as ct, plot, "cast", director FROM omdb_cache', conn)
+            plots = read_sql_df(
+                conn,
+                'SELECT title as ct, plot, "cast", director FROM omdb_cache',
+            )
 
         def _omdb_text(row):
             clean, _ = _clean_title(row["title"])
@@ -1775,9 +1800,10 @@ class RecommenderEngine:
     # ── Genome ────────────────────────────────────────────────────────────────
     def _build_genome(self):
         with get_db() as conn:
-            if conn.execute("SELECT COUNT(*) FROM genome_scores").fetchone()[0] == 0:
+            genome_count_result = conn.execute("SELECT COUNT(*) FROM genome_scores").fetchone()
+            if not genome_count_result or genome_count_result[0] == 0:
                 return
-            genome_df = pd.read_sql("SELECT * FROM genome_scores", conn)
+            genome_df = read_sql_df(conn, "SELECT * FROM genome_scores")
         pivot = genome_df.pivot_table(index="movieId", columns="tagId",
                                       values="relevance", fill_value=0)
         pivot = pivot.reindex(self.movies_df["movieId"].values, fill_value=0)
@@ -2323,9 +2349,17 @@ class RecommenderEngine:
             run_id = f"{model_name}_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
             with get_db() as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO model_metrics "
+                    "INSERT INTO model_metrics "
                     "(run_id,model,bce_loss,bpr_loss,mse,ndcg_10,auc,ts) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(run_id) DO UPDATE SET "
+                    "model = excluded.model, "
+                    "bce_loss = excluded.bce_loss, "
+                    "bpr_loss = excluded.bpr_loss, "
+                    "mse = excluded.mse, "
+                    "ndcg_10 = excluded.ndcg_10, "
+                    "auc = excluded.auc, "
+                    "ts = excluded.ts",
                     (run_id, model_name,
                      self._metrics.get("ncf_bce"),
                      self._metrics.get("ncf_bpr"),
@@ -2822,9 +2856,17 @@ class RecommenderEngine:
         try:
             with get_db() as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO omdb_cache "
+                    "INSERT INTO omdb_cache "
                     '(title,poster,plot,"cast",director,imdb_rating,runtime,fetched_at) '
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(title) DO UPDATE SET "
+                    "poster = excluded.poster, "
+                    "plot = excluded.plot, "
+                    '"cast" = excluded."cast", '
+                    "director = excluded.director, "
+                    "imdb_rating = excluded.imdb_rating, "
+                    "runtime = excluded.runtime, "
+                    "fetched_at = excluded.fetched_at",
                     (cache_key, result["poster"], result["plot"], result["cast"],
                      result["director"], result["imdb_rating"], result["runtime"],
                      _utc_now().isoformat()))
@@ -3076,7 +3118,7 @@ def _candidate_to_movie_payload(candidate: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _row_to_movie_candidate(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_movie_candidate(row: Any) -> dict[str, Any]:
     return _movie_search_candidate(
         title=str(row["title"]),
         genres=str(row["genres"] or ""),
@@ -3354,7 +3396,7 @@ def _lightweight_catalog_movies() -> list[dict[str, Any]]:
     return [dict(movie) for movie in _LIGHTWEIGHT_TITLE_CATALOG_CACHE]
 
 
-def _row_to_movie_payload(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_movie_payload(row: Any) -> dict[str, Any]:
     return _candidate_to_movie_payload(_row_to_movie_candidate(row))
 
 
@@ -3503,7 +3545,7 @@ def _search_movies_from_database(query: str, limit: int = 50) -> list[dict[str, 
         params.extend([token_like, token_like])
 
     candidate_limit = min(max(limit * 8, 250), 500)
-    rows: list[sqlite3.Row] = []
+    rows: list[Any] = []
 
     try:
         with get_db() as conn:
@@ -3675,7 +3717,7 @@ def _recommend_from_database(
     """
     params.append(candidate_limit)
 
-    rows: list[sqlite3.Row] = []
+    rows: list[Any] = []
     try:
         with get_db() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
@@ -4100,8 +4142,11 @@ def record_feedback(user_id: str, movie_id: int, feedback: str) -> bool:
     try:
         with get_db() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO user_feedback "
-                "(user_id,movieId,feedback,ts) VALUES (?,?,?,?)",
+                "INSERT INTO user_feedback "
+                "(user_id,movieId,feedback,ts) VALUES (?,?,?,?) "
+                "ON CONFLICT(user_id,movieId) DO UPDATE SET "
+                "feedback = excluded.feedback, "
+                "ts = excluded.ts",
                 (user_id, movie_id, feedback, _utc_now().isoformat()))
         return True
     except Exception as e:
@@ -4150,7 +4195,36 @@ def add_movies_to_db(movies_list: list) -> int:
     if not rows:
         return 0
     with get_db() as conn:
-        pd.DataFrame(rows).to_sql("movies", conn, if_exists="append", index=False)
+        conn.executemany(
+            """
+            INSERT INTO movies (
+                movieId,
+                title,
+                genres,
+                avg_rating,
+                num_ratings,
+                sentiment_score,
+                trending_score,
+                poster,
+                source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row["movieId"],
+                    row["title"],
+                    row["genres"],
+                    row["avg_rating"],
+                    row["num_ratings"],
+                    row["sentiment_score"],
+                    row["trending_score"],
+                    row["poster"],
+                    row["source"],
+                )
+                for row in rows
+            ],
+        )
     _HOME_MOVIES_CACHE.clear()
     RecommenderEngine.reset()
     return len(rows)
@@ -4245,7 +4319,8 @@ def list_admin_movies(
     """
 
     with get_db() as conn:
-        total = int(conn.execute(count_query, tuple(params)).fetchone()["total"] or 0)
+        count_result = conn.execute(count_query, tuple(params)).fetchone()
+        total = int(count_result["total"] or 0) if count_result else 0
         row_params: list[Any] = list(params)
         if limit is not None:
             safe_limit = max(1, int(limit))
@@ -4336,7 +4411,7 @@ def get_home_movies(
     """
     params.append(candidate_limit)
 
-    rows: list[sqlite3.Row] = []
+    rows: list[Any] = []
     try:
         with get_db() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
