@@ -1,5 +1,10 @@
-# MovieBuzz Backend – root-level requirements (mirrors backend/requirements.txt)
-# Railpack reads this file from the project root.
+# MovieBuzz Backend – root-level requirements for deployment (Railpack / Railway)
+# Heavy training-only packages (tensorflow, keras) are excluded here.
+# For local training, install backend/requirements.txt directly.
+
+# ── CPU-only torch (avoid 2+ GB of CUDA packages on a CPU-only server) ───────
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
 
 # ── API ───────────────────────────────────────────────────────────────────────
 fastapi>=0.111.0
@@ -20,18 +25,20 @@ pandas>=2.2.0
 scipy>=1.13.0
 matplotlib>=3.8.0
 
-# ── Deep learning ─────────────────────────────────────────────────────────────
+# ── Embeddings (uses CPU torch above) ────────────────────────────────────────
 sentence-transformers>=2.7.0
-tensorflow==2.15.0
-keras==2.15.0
+
+# ── Gradient Boosting ─────────────────────────────────────────────────────────
+xgboost>=2.0.0
+lightgbm>=4.5.0
+catboost>=1.2.7
+
+# ── Implicit ALS ─────────────────────────────────────────────────────────────
 implicit>=0.7.2
 
 # ── NLP ───────────────────────────────────────────────────────────────────────
 rapidfuzz>=3.8.0
 textblob>=0.18.0
-xgboost>=2.0.0
-lightgbm>=4.5.0
-catboost>=1.2.7
 
 # ── Auth / Security ──────────────────────────────────────────────────────────
 bcrypt>=4.1.0

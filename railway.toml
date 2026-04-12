@@ -1,0 +1,12 @@
+[build]
+# Use the Dockerfile for full control over the build process.
+# This avoids Railpack auto-detecting Python and pulling heavyweight CUDA packages.
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
