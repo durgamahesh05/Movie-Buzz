@@ -70,13 +70,9 @@ def test_lightweight_catalog_search_matches_partial_titles(
 
 
 @patch("recommender._search_movies_from_lightweight_catalog")
-@patch("recommender.get_db")
 def test_search_movies_uses_lightweight_fallback_when_db_results_are_empty(
-    mock_get_db,
     mock_search_movies_from_lightweight_catalog,
 ):
-    mock_conn = mock_get_db.return_value.__enter__.return_value
-    mock_conn.execute.return_value.fetchall.return_value = []
     mock_search_movies_from_lightweight_catalog.return_value = [
         {
             "movie_key": f"harry-potter-{index}",
@@ -89,11 +85,7 @@ def test_search_movies_uses_lightweight_fallback_when_db_results_are_empty(
 
     assert len(results) == 5
     assert all("Harry Potter" in movie["title"] for movie in results)
-    mock_search_movies_from_lightweight_catalog.assert_called_once_with(
-        "harry potter",
-        limit=5,
-        exclude_keys=set(),
-    )
+    mock_search_movies_from_lightweight_catalog.assert_called_once_with("harry potter", limit=5)
 
 
 @patch("app.recommend_movies")
@@ -238,68 +230,134 @@ def test_forgot_password_reset_rejects_weak_password(mock_find_one):
     assert response.json() == {"success": False, "msg": PASSWORD_POLICY_MESSAGE}
 
 
+@patch("auth_routes.bcrypt.checkpw", return_value=True)
+@patch(
+    "auth_routes.get_preferences",
+    return_value={"age": None, "preferred_genres": [], "preferred_moods": []},
+)
+@patch("auth_routes.find_one_by_login_identifier")
+def test_login_allows_admin_username_identifier(
+    mock_find_one_by_login_identifier,
+    mock_get_preferences,
+    mock_checkpw,
+):
+    mock_find_one_by_login_identifier.return_value = {
+        "name": "Admin 61",
+        "email": "admin61@moviebuzz.in",
+        "password": "hashed-password",
+        "verified": True,
+        "role": "admin",
+    }
+
+    response = client.post(
+        "/auth/login",
+        json={
+            "email": "admin_61",
+            "password": "Moviebuzz@61",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "msg": "Login successful",
+        "name": "Admin 61",
+        "email": "admin61@moviebuzz.in",
+        "role": "admin",
+        "age": None,
+        "preferred_genres": [],
+        "preferred_moods": [],
+    }
+    mock_find_one_by_login_identifier.assert_called_once_with("admin_61")
+    mock_get_preferences.assert_called_once_with("admin61@moviebuzz.in")
+    mock_checkpw.assert_called_once()
+
+
 @patch("recommender._curated_movies_for_genre", return_value=[])
 @patch("recommender._hydrate_visible_movie_posters", side_effect=lambda movies, max_items: movies)
-@patch("recommender._row_to_movie_payload")
-@patch("recommender.get_db")
+@patch("recommender._candidate_to_movie_payload")
+@patch("recommender._lightweight_catalog_movies")
 def test_get_home_movies_prioritises_admin_movies(
-    mock_get_db,
-    mock_row_to_movie_payload,
+    mock_lightweight_catalog_movies,
+    mock_candidate_to_movie_payload,
     mock_hydrate_visible_movie_posters,
     mock_curated_movies_for_genre,
 ):
     recommender._HOME_MOVIES_CACHE.clear()
 
-    mock_conn = mock_get_db.return_value.__enter__.return_value
-    mock_conn.execute.return_value.fetchall.return_value = [
+    mock_lightweight_catalog_movies.return_value = [
         {
-            "movieId": 11,
+            "movie_id": 11,
             "title": "Catalog Movie (2024)",
             "genres": "Action",
-            "avg_rating": 9.1,
+            "rating": 9.1,
             "num_ratings": 100,
             "trending_score": 25.0,
             "poster": "",
             "source": "catalog",
         },
         {
-            "movieId": -22,
+            "movie_id": -22,
             "title": "Admin Movie (2025)",
             "genres": "Drama",
-            "avg_rating": 6.2,
+            "rating": 6.2,
             "num_ratings": 1,
             "trending_score": 0.0,
             "poster": "",
             "source": "admin",
         },
     ]
-    mock_row_to_movie_payload.side_effect = lambda row: {
-        "movie_key": str(row["movieId"]),
+    mock_candidate_to_movie_payload.side_effect = lambda row: {
+        "movie_key": str(row["movie_id"]),
         "title": row["title"],
     }
 
-    recommender.get_home_movies(limit=2)
-    executed_query = mock_conn.execute.call_args[0][0]
+    results = recommender.get_home_movies(limit=2)
 
-    assert "CASE WHEN source = 'admin' THEN 0 ELSE 1 END" in executed_query
+    assert results[0]["title"] == "Admin Movie (2025)"
+    assert results[1]["title"] == "Catalog Movie (2024)"
 
 
 @patch("recommender._load_user_preference_context", return_value={"preferred_genres": ["action"]})
 @patch("recommender._curated_movies_for_genre", return_value=[])
 @patch("recommender._hydrate_visible_movie_posters", side_effect=lambda movies, max_items: movies)
-@patch("recommender.get_db")
+@patch("recommender._candidate_to_movie_payload")
+@patch("recommender._lightweight_catalog_movies")
 def test_get_home_movies_expands_candidate_pool_for_preferences(
-    mock_get_db,
+    mock_lightweight_catalog_movies,
+    mock_candidate_to_movie_payload,
     mock_hydrate_visible_movie_posters,
     mock_curated_movies_for_genre,
     mock_load_user_preference_context,
 ):
     recommender._HOME_MOVIES_CACHE.clear()
 
-    mock_conn = mock_get_db.return_value.__enter__.return_value
-    mock_conn.execute.return_value.fetchall.return_value = []
+    mock_lightweight_catalog_movies.return_value = [
+        {
+            "movie_key": f"movie-{index}",
+            "movie_id": index,
+            "title": f"Movie {index} (2024)",
+            "clean_title": f"Movie {index}",
+            "year": "2024",
+            "genres": "Action",
+            "rating": 5.0,
+            "num_ratings": 10,
+            "trending_score": 1.0,
+            "poster": "",
+            "source": "catalog",
+        }
+        for index in range(1, 201)
+    ]
+    mock_candidate_to_movie_payload.side_effect = lambda row: {
+        "movie_key": row["movie_key"],
+        "movie_id": row["movie_id"],
+        "title": row["title"],
+        "genres": row["genres"],
+        "rating": row["rating"],
+        "trending_score": row["trending_score"],
+        "poster": row["poster"],
+    }
 
     recommender.get_home_movies(limit=10, user_email="test@example.com")
-    executed_params = mock_conn.execute.call_args[0][1]
 
-    assert executed_params[-1] == 160
+    assert mock_candidate_to_movie_payload.call_count == 160

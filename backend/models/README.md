@@ -16,6 +16,11 @@ This directory is for locally generated model binaries and feature caches. Do no
 | `xgb_ranker.json` | Current XGBoost model export | Recommended |
 | `xgb_ranker_meta.pkl` | Calibration and metadata for XGBoost | Required with `xgb_ranker.json` |
 | `xgb_feature_context.pkl` | Feature-column and lookup context for XGBoost | Required |
+| `lightgbm_model.txt` | LightGBM benchmark classifier export | Optional benchmark artifact |
+| `catboost_model.cbm` | CatBoost benchmark classifier export | Optional benchmark artifact |
+| `logreg_model.joblib` | Logistic Regression benchmark pipeline | Optional benchmark artifact |
+| `random_forest_model.joblib` | Random Forest benchmark model | Optional benchmark artifact |
+| `benchmark_feature_schema.json` | Feature schema for the benchmark training suite | Optional benchmark metadata |
 | `user_feature_stats.pkl` | Derived user feature stats | Required by the re-ranker |
 | `movie_genome_stats.pkl` | Derived movie/genome feature stats | Required by the re-ranker |
 | `movie_sbert_embeddings.pkl` | SBERT movie-title embeddings | Recommended |

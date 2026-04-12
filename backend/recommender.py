@@ -19,6 +19,7 @@ import importlib
 import importlib.util
 import io
 import json
+import random
 import os, re, pickle, logging, requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -34,7 +35,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
 from config import env
-from db import DB_BACKEND, format_db_target, get_db as open_db, is_postgres, read_sql_df
+from db import (
+    DB_BACKEND,
+    format_db_target,
+    get_collection,
+    get_db as open_db,
+    read_collection_df,
+)
 from user_model import get_preferences as get_user_preferences
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger("recommender")
@@ -59,6 +66,28 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         log.warning("Invalid integer for %s=%r; using %d", name, value, default)
         return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+    return normalized in {"1", "true", "yes", "on"}
+
+
+def _normalize_limit(value: int | None, default: int | None = None) -> int | None:
+    if value is None:
+        value = default
+    if value is None:
+        return None
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return default
+    return resolved if resolved > 0 else None
 
 
 def _utc_now() -> datetime:
@@ -115,7 +144,7 @@ OMDB_TIMEOUT  = _env_int("MOVIEBUZZ_OMDB_TIMEOUT", 5)
 
 # ── TMDB (free public search, no key needed for search endpoint) ───────────────
 TMDB_API_KEY = (
-    env("TMDB_API_KEY", "MOVIEBUZZ_TMDB_API_KEY", default="")
+    env("TMDB_API_KEY", "THEMOVIEDB_API_KEY", "MOVIEBUZZ_TMDB_API_KEY", default="")
 ).strip()
 TMDB_SEARCH_URL  = "https://api.themoviedb.org/3/search/movie"
 TMDB_IMAGE_BASE  = "https://image.tmdb.org/t/p/w500"
@@ -206,6 +235,15 @@ ALS_TRAIN_ROWS = _env_int("ALS_TRAIN_ROWS", 5_000_000)
 SVD_TRAIN_ROWS = _env_int("SVD_TRAIN_ROWS", 2_000_000)
 NCF_TRAIN_ROWS = _env_int("NCF_TRAIN_ROWS", 2_000_000)
 XGB_TRAIN_ROWS = _env_int("XGB_TRAIN_ROWS", 500_000)
+IMPORT_MAX_MOVIES = _normalize_limit(_env_int("MOVIEBUZZ_IMPORT_MAX_MOVIES", 7_000))
+IMPORT_MAX_RATINGS = _normalize_limit(_env_int("MOVIEBUZZ_IMPORT_MAX_RATINGS", 500_000))
+IMPORT_INCLUDE_GENOME = _env_bool("MOVIEBUZZ_IMPORT_INCLUDE_GENOME", default=False)
+IMPORT_PERSIST_TAGS = _env_bool("MOVIEBUZZ_IMPORT_PERSIST_TAGS", default=False)
+IMPORT_PERSIST_RATING_TIMESTAMPS = _env_bool(
+    "MOVIEBUZZ_IMPORT_PERSIST_RATING_TIMESTAMPS",
+    default=False,
+)
+IMPORT_SAMPLE_SEED = _env_int("MOVIEBUZZ_IMPORT_SAMPLE_SEED", 42)
 SBERT_MODEL  = "all-MiniLM-L6-v2"
 SBERT_CACHE  = MODEL_DIR / "sbert_embeddings.npy"
 SBERT_IDX    = MODEL_DIR / "sbert_index.pkl"
@@ -221,8 +259,14 @@ XGB_PATH     = MODEL_DIR / "xgb_ranker.pkl"
 XGB_JSON_PATH = MODEL_DIR / "xgb_ranker.json"
 XGB_META_PATH = MODEL_DIR / "xgb_ranker_meta.pkl"
 XGB_FEATURE_CONTEXT_PATH = MODEL_DIR / "xgb_feature_context.pkl"
+XGB_FEATURE_COLS_PATH = MODEL_DIR / "xgb_feature_cols.json"
 NCF_ENC_PATH = MODEL_DIR / "ncf_encoders.pkl"
 EVAL_REPORT_PATH = MODEL_DIR / "eval_report.json"
+LIGHTGBM_MODEL_PATH = MODEL_DIR / "lightgbm_model.txt"
+CATBOOST_MODEL_PATH = MODEL_DIR / "catboost_model.cbm"
+LOGREG_MODEL_PATH = MODEL_DIR / "logreg_model.joblib"
+RANDOM_FOREST_MODEL_PATH = MODEL_DIR / "random_forest_model.joblib"
+BENCHMARK_SCHEMA_PATH = MODEL_DIR / "benchmark_feature_schema.json"
 HOME_CACHE_TTL_SECONDS = 60 * 30
 HOME_POSTER_HYDRATE_LIMIT = _env_int("MOVIEBUZZ_HOME_POSTER_HYDRATE_LIMIT", 24)
 _HOME_MOVIES_CACHE: dict[str, dict[str, Any]] = {}
@@ -1168,114 +1212,193 @@ def get_db():
     return open_db()
 
 
-def _recommender_schema_sql() -> str:
-    return """
-        CREATE TABLE IF NOT EXISTS movies (
-            movieId         INTEGER PRIMARY KEY,
-            title           TEXT NOT NULL,
-            genres          TEXT DEFAULT '',
-            avg_rating      REAL DEFAULT 0,
-            num_ratings     INTEGER DEFAULT 0,
-            sentiment_score REAL DEFAULT 0,
-            trending_score  REAL DEFAULT 0,
-            poster          TEXT DEFAULT '',
-            source          TEXT DEFAULT 'ml25m'
-        );
-        CREATE TABLE IF NOT EXISTS tags (
-            movieId INTEGER,
-            tag TEXT,
-            FOREIGN KEY(movieId) REFERENCES movies(movieId)
-        );
-        CREATE TABLE IF NOT EXISTS genome_scores (
-            movieId INTEGER,
-            tagId INTEGER,
-            relevance REAL,
-            PRIMARY KEY (movieId, tagId)
-        );
-        CREATE TABLE IF NOT EXISTS omdb_cache (
-            title TEXT PRIMARY KEY,
-            poster TEXT DEFAULT '',
-            plot TEXT DEFAULT '',
-            "cast" TEXT DEFAULT '',
-            director TEXT DEFAULT '',
-            imdb_rating TEXT DEFAULT '',
-            runtime TEXT DEFAULT '',
-            fetched_at TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS user_feedback (
-            user_id TEXT NOT NULL,
-            movieId INTEGER NOT NULL,
-            feedback TEXT CHECK(feedback IN ('like','dislike','neutral')),
-            ts TEXT DEFAULT '',
-            PRIMARY KEY (user_id, movieId)
-        );
-        CREATE TABLE IF NOT EXISTS rating_timestamps (
-            movieId INTEGER PRIMARY KEY,
-            latest_ts INTEGER DEFAULT 0,
-            num_recent INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS model_metrics (
-            run_id TEXT PRIMARY KEY,
-            model TEXT,
-            bce_loss REAL,
-            bpr_loss REAL,
-            mse REAL,
-            ndcg_10 REAL,
-            auc REAL,
-            ts TEXT DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);
-        CREATE INDEX IF NOT EXISTS idx_movies_title_lower ON movies(lower(title));
-        CREATE INDEX IF NOT EXISTS idx_movies_genres_lower ON movies(lower(genres));
-        CREATE INDEX IF NOT EXISTS idx_movies_home_sort
-            ON movies(num_ratings DESC, trending_score DESC, avg_rating DESC, title ASC);
-        CREATE INDEX IF NOT EXISTS idx_tags_mid ON tags(movieId);
-        CREATE INDEX IF NOT EXISTS idx_genome_mid ON genome_scores(movieId);
-    """
+def _insert_many_in_batches(
+    collection_name: str,
+    documents: list[dict[str, Any]],
+    batch_size: int = 5_000,
+) -> None:
+    if not documents:
+        return
+    collection = get_collection(collection_name)
+    for start in range(0, len(documents), batch_size):
+        batch = documents[start : start + batch_size]
+        if batch:
+            collection.insert_many(batch, ordered=False)
+
+
+def _select_movies_for_subset(
+    movies_df: pd.DataFrame,
+    max_movies: int | None,
+) -> pd.DataFrame:
+    resolved_limit = _normalize_limit(max_movies)
+    if resolved_limit is None or len(movies_df) <= resolved_limit:
+        return movies_df.copy()
+
+    ranked = (
+        movies_df.sort_values(
+            ["num_ratings", "avg_rating", "movieId"],
+            ascending=[False, False, True],
+        )
+        .head(resolved_limit)
+        .copy()
+    )
+    return ranked
+
+
+def _import_filtered_ratings_subset(
+    ratings_path: Path,
+    selected_movie_ids: set[int],
+    max_ratings: int | None,
+) -> tuple[int, int]:
+    ratings_collection = get_collection("ratings")
+    ratings_collection.delete_many({})
+
+    if not selected_movie_ids:
+        return (0, 0)
+
+    resolved_limit = _normalize_limit(max_ratings)
+    matched_count = 0
+
+    if resolved_limit is None:
+        inserted_count = 0
+        for chunk in pd.read_csv(
+            ratings_path,
+            chunksize=RATING_CHUNK,
+            usecols=["userId", "movieId", "rating", "timestamp"],
+        ):
+            filtered = chunk[chunk["movieId"].isin(selected_movie_ids)]
+            if filtered.empty:
+                continue
+            docs = [
+                {
+                    "userId": int(row.userId),
+                    "movieId": int(row.movieId),
+                    "rating": float(row.rating),
+                    "timestamp": int(row.timestamp),
+                }
+                for row in filtered.itertuples(index=False)
+            ]
+            matched_count += len(docs)
+            inserted_count += len(docs)
+            _insert_many_in_batches("ratings", docs)
+        return (matched_count, inserted_count)
+
+    rng = random.Random(IMPORT_SAMPLE_SEED)
+    sampled_rows: list[tuple[int, int, float, int]] = []
+
+    for chunk in pd.read_csv(
+        ratings_path,
+        chunksize=RATING_CHUNK,
+        usecols=["userId", "movieId", "rating", "timestamp"],
+    ):
+        filtered = chunk[chunk["movieId"].isin(selected_movie_ids)]
+        if filtered.empty:
+            continue
+
+        for row in filtered.itertuples(index=False):
+            matched_count += 1
+            payload = (
+                int(row.userId),
+                int(row.movieId),
+                float(row.rating),
+                int(row.timestamp),
+            )
+            if len(sampled_rows) < resolved_limit:
+                sampled_rows.append(payload)
+                continue
+
+            replacement_index = rng.randint(0, matched_count - 1)
+            if replacement_index < resolved_limit:
+                sampled_rows[replacement_index] = payload
+
+    if sampled_rows:
+        sampled_rows.sort(key=lambda row: (row[1], row[0], row[3]))
+        _insert_many_in_batches(
+            "ratings",
+            [
+                {
+                    "userId": user_id,
+                    "movieId": movie_id,
+                    "rating": rating,
+                    "timestamp": timestamp,
+                }
+                for user_id, movie_id, rating, timestamp in sampled_rows
+            ],
+        )
+
+    return (matched_count, len(sampled_rows))
+
+
+def _best_effort_reset_collection(collection_name: str) -> bool:
+    try:
+        get_collection(collection_name).delete_many({})
+        return True
+    except Exception as exc:
+        log.warning(
+            "Skipping MongoDB reset for %s due to write timeout/error: %s",
+            collection_name,
+            exc,
+        )
+        return False
 
 
 def init_db():
-    with get_db() as conn:
-        conn.executescript(_recommender_schema_sql())
+    get_db().ensure_indexes()
     log.info("DB ready: %s", DB_PATH)
-    # Migrate: clear old hardcoded placeholder poster strings so real ones get fetched
-    try:
-        with get_db() as conn:
-            conn.execute("""
-                UPDATE movies SET poster = ''
-                WHERE poster LIKE '%placehold.co%'
-                   OR poster LIKE '%via.placeholder.com%'
-                   OR poster = 'https://placehold.co/300x450?text=No+Poster'
-            """)
-            # Clear omdb_cache entries that have empty/bad posters
-            # so the new OMDB key re-fetches them fresh
-            conn.execute("""
-                DELETE FROM omdb_cache
-                WHERE poster = ''
-                   OR poster IS NULL
-                   OR poster LIKE '%placehold.co%'
-                   OR poster LIKE '%placeholder%'
-            """)
-    except Exception:
-        pass
+    get_collection("movies").update_many(
+        {
+            "poster": {
+                "$in": [
+                    "https://placehold.co/300x450?text=No+Poster",
+                    "",
+                    None,
+                ]
+            }
+        },
+        {"$set": {"poster": ""}},
+    )
+    get_collection("omdb_cache").delete_many(
+        {
+            "$or": [
+                {"poster": {"$exists": False}},
+                {"poster": ""},
+                {"poster": None},
+                {"poster": {"$regex": "placehold\\.co", "$options": "i"}},
+                {"poster": {"$regex": "placeholder", "$options": "i"}},
+            ]
+        }
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ML25M CHUNKED LOADER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_ml25m_to_db():
-    with get_db() as conn:
-        count_result = conn.execute("SELECT COUNT(*) FROM movies").fetchone()
-        if (count_result and count_result[0] > 0):
-            log.info("DB already populated – skipping ML25M import")
-            return
+def load_ml25m_to_db(
+    max_movies: int | None = None,
+    max_ratings: int | None = None,
+    include_genome: bool | None = None,
+    persist_tags: bool | None = None,
+    persist_rating_timestamps: bool | None = None,
+):
+    movies_collection = get_collection("movies")
+    if movies_collection.count_documents({}, limit=1):
+        log.info("DB already populated – skipping ML25M import")
+        return
 
-    if is_postgres():
-        raise RuntimeError(
-            "Postgres database is empty. Import or migrate the MovieBuzz data "
-            "into Supabase before starting the API."
-        )
+    resolved_max_movies = _normalize_limit(max_movies, IMPORT_MAX_MOVIES)
+    resolved_max_ratings = _normalize_limit(max_ratings, IMPORT_MAX_RATINGS)
+    resolved_include_genome = (
+        IMPORT_INCLUDE_GENOME if include_genome is None else bool(include_genome)
+    )
+    resolved_persist_tags = (
+        IMPORT_PERSIST_TAGS if persist_tags is None else bool(persist_tags)
+    )
+    resolved_persist_rating_timestamps = (
+        IMPORT_PERSIST_RATING_TIMESTAMPS
+        if persist_rating_timestamps is None
+        else bool(persist_rating_timestamps)
+    )
 
     movies_path        = DATA_DIR / "movies.csv"
     ratings_path       = DATA_DIR / "ratings.csv"
@@ -1314,6 +1437,16 @@ def load_ml25m_to_db():
     movies_df = movies_df.merge(avg_df, on="movieId", how="left")
     movies_df["avg_rating"]  = movies_df["avg_rating"].fillna(0)
     movies_df["num_ratings"] = movies_df["num_ratings"].fillna(0).astype(int)
+    movies_df = _select_movies_for_subset(movies_df, resolved_max_movies)
+    selected_movie_ids = {
+        int(movie_id)
+        for movie_id in movies_df["movieId"].tolist()
+    }
+    log.info(
+        "Selected %d movies for MongoDB import (max_movies=%s)",
+        len(selected_movie_ids),
+        resolved_max_movies if resolved_max_movies is not None else "all",
+    )
 
     # trending score (MinMax scaled recent rating count)
     ts_df = pd.DataFrame({
@@ -1321,13 +1454,48 @@ def load_ml25m_to_db():
         "latest_ts":  list(latest_ts.values()),
         "num_recent": [recent_cnt.get(k, 0) for k in latest_ts],
     })
-    ts_df["trending_score"] = MinMaxScaler().fit_transform(ts_df[["num_recent"]])
+    if selected_movie_ids:
+        ts_df = ts_df[ts_df["movieId"].isin(selected_movie_ids)].copy()
+    if not ts_df.empty:
+        ts_df["trending_score"] = MinMaxScaler().fit_transform(ts_df[["num_recent"]])
+    else:
+        ts_df["trending_score"] = pd.Series(dtype=np.float32)
     movies_df = movies_df.merge(ts_df[["movieId", "trending_score"]], on="movieId", how="left")
     movies_df["trending_score"] = movies_df["trending_score"].fillna(0)
+    rating_timestamp_docs = [
+        {
+            "movieId": int(row.movieId),  # type: ignore
+            "latest_ts": int(row.latest_ts),  # type: ignore
+            "num_recent": int(row.num_recent),  # type: ignore
+            "trending_score": float(row.trending_score),  # type: ignore
+        }
+        for row in ts_df.itertuples(index=False)
+    ]
+    if rating_timestamp_docs and resolved_persist_rating_timestamps:
+        if _best_effort_reset_collection("rating_timestamps"):
+            try:
+                _insert_many_in_batches("rating_timestamps", rating_timestamp_docs)
+            except Exception as exc:
+                log.warning(
+                    "Skipping rating_timestamps import after write timeout/error: %s",
+                    exc,
+                )
+    else:
+        log.info(
+            "Skipping rating_timestamps collection import; trending_score stays embedded in movies"
+        )
 
-    with get_db() as conn:
-        ts_df.to_sql("rating_timestamps", conn, if_exists="replace",
-                     index=False, chunksize=5_000)
+    matched_ratings, imported_ratings = _import_filtered_ratings_subset(
+        ratings_path,
+        selected_movie_ids,
+        resolved_max_ratings,
+    )
+    log.info(
+        "Imported %d ratings into MongoDB from %d matched ratings (max_ratings=%s)",
+        imported_ratings,
+        matched_ratings,
+        resolved_max_ratings if resolved_max_ratings is not None else "all",
+    )
 
     # ── tags + sentiment ──────────────────────────────────────────────────────
     movies_df["sentiment_score"] = 0.0
@@ -1335,33 +1503,44 @@ def load_ml25m_to_db():
         log.info("Loading tags …")
         sentiment_sum: Dict[int, float] = {}
         sentiment_count: Dict[int, int] = {}
-        first_chunk = True
+        persist_tags_to_mongo = False
+        if resolved_persist_tags:
+            persist_tags_to_mongo = _best_effort_reset_collection("tags")
+        else:
+            log.info("Skipping tags collection import; tags are used only to derive sentiment_score")
+        for chunk in pd.read_csv(
+            tags_path,
+            chunksize=RATING_CHUNK,
+            usecols=["movieId", "tag"],
+        ):
+            chunk = chunk[chunk["movieId"].isin(selected_movie_ids)].copy()
+            if chunk.empty:
+                continue
+            chunk["tag"] = chunk["tag"].fillna("").astype(str)
+            tag_docs = [
+                {"movieId": int(row.movieId), "tag": str(row.tag)}
+                for row in chunk.itertuples(index=False)
+                if str(row.tag).strip()
+            ]
+            if persist_tags_to_mongo and tag_docs:
+                try:
+                    _insert_many_in_batches("tags", tag_docs)
+                except Exception as exc:
+                    persist_tags_to_mongo = False
+                    log.warning(
+                        "Disabling tags collection import after write timeout/error: %s",
+                        exc,
+                    )
 
-        with get_db() as conn:
-            for chunk in pd.read_csv(
-                tags_path,
-                chunksize=RATING_CHUNK,
-                usecols=["movieId", "tag"],
-            ):
-                chunk["tag"] = chunk["tag"].fillna("").astype(str)
-                chunk.to_sql(
-                    "tags",
-                    conn,
-                    if_exists="replace" if first_chunk else "append",
-                    index=False,
-                    chunksize=10_000,
-                )
-                first_chunk = False
-
-                if HAS_TEXTBLOB:
-                    assert TextBlob is not None
-                    grouped = chunk.groupby("movieId")["tag"].agg(list)
-                    for mid, tags in grouped.items():
-                        text = " ".join(tags)
-                        weight = len(tags)
-                        polarity = TextBlob(text).sentiment.polarity
-                        sentiment_sum[mid] = sentiment_sum.get(int(mid), 0.0) + polarity * weight
-                        sentiment_count[mid] = sentiment_count.get(int(mid), 0) + weight
+            if HAS_TEXTBLOB:
+                assert TextBlob is not None
+                grouped = chunk.groupby("movieId")["tag"].agg(list)
+                for mid, tags in grouped.items():
+                    text = " ".join(tags)
+                    weight = len(tags)
+                    polarity = TextBlob(text).sentiment.polarity
+                    sentiment_sum[mid] = sentiment_sum.get(int(mid), 0.0) + polarity * weight
+                    sentiment_count[mid] = sentiment_count.get(int(mid), 0) + weight
 
         if HAS_TEXTBLOB and sentiment_sum:
             sentiment_df = pd.DataFrame(
@@ -1388,20 +1567,59 @@ def load_ml25m_to_db():
                 movies_df = movies_df.drop(columns=["sentiment_score_chunked"])
 
     # ── genome scores ─────────────────────────────────────────────────────────
-    if genome_scores_path.exists():
+    if resolved_include_genome and genome_scores_path.exists():
         log.info("Loading genome scores …")
-        for chunk in pd.read_csv(genome_scores_path, chunksize=RATING_CHUNK):
-            with get_db() as conn:
-                chunk.to_sql("genome_scores", conn, if_exists="append",
-                             index=False, chunksize=10_000)
+        if _best_effort_reset_collection("genome_scores"):
+            for chunk in pd.read_csv(genome_scores_path, chunksize=RATING_CHUNK):
+                chunk = chunk[chunk["movieId"].isin(selected_movie_ids)].copy()
+                if chunk.empty:
+                    continue
+                genome_docs = [
+                    {
+                        "movieId": int(row.movieId),
+                        "tagId": int(row.tagId),
+                        "relevance": float(row.relevance),
+                    }
+                    for row in chunk.itertuples(index=False)
+                ]
+                if genome_docs:
+                    try:
+                        _insert_many_in_batches("genome_scores", genome_docs)
+                    except Exception as exc:
+                        log.warning(
+                            "Skipping remaining genome score import after write timeout/error: %s",
+                            exc,
+                        )
+                        break
+    else:
+        log.info("Skipping genome score import for Atlas-friendly subset loading")
 
     # ── write movies ──────────────────────────────────────────────────────────
     cols = ["movieId", "title", "genres", "avg_rating", "num_ratings",
             "sentiment_score", "trending_score", "poster", "source"]
-    movies_df[[c for c in cols if c in movies_df.columns]].to_sql(
-        "movies", get_db(), if_exists="replace", index=False, chunksize=5_000
+    movie_docs = []
+    for row in movies_df[[c for c in cols if c in movies_df.columns]].itertuples(index=False):
+        movie_docs.append(
+            {
+                "movieId": int(row.movieId),
+                "title": str(row.title),
+                "genres": str(row.genres or ""),
+                "avg_rating": float(row.avg_rating or 0),
+                "num_ratings": int(row.num_ratings or 0),
+                "sentiment_score": float(row.sentiment_score or 0),
+                "trending_score": float(row.trending_score or 0),
+                "poster": str(row.poster or ""),
+                "source": str(row.source or "ml25m"),
+            }
+        )
+    if movie_docs:
+        movies_collection.delete_many({})
+        _insert_many_in_batches("movies", movie_docs)
+    log.info(
+        "MovieLens subset import done – %d movies, %d ratings",
+        len(movies_df),
+        imported_ratings,
     )
-    log.info("ML25M import done – %d movies", len(movies_df))
 
 
 def _sample_ratings_csv(
@@ -1489,15 +1707,18 @@ def _read_omdb_cache_entry(cache_key: str) -> Optional[dict[str, str]]:
         return cached
 
     try:
-        with get_db() as conn:
-            row = conn.execute(
-                """
-                SELECT poster, plot, cast, director, imdb_rating, runtime
-                FROM omdb_cache
-                WHERE title = ?
-                """,
-                (cache_key,),
-            ).fetchone()
+        row = get_collection("omdb_cache").find_one(
+            {"title": cache_key},
+            {
+                "_id": 0,
+                "poster": 1,
+                "plot": 1,
+                "cast": 1,
+                "director": 1,
+                "imdb_rating": 1,
+                "runtime": 1,
+            },
+        )
     except Exception as exc:
         log.debug("OMDb cache read error for %s: %s", cache_key, exc)
         return None
@@ -1515,15 +1736,44 @@ def _read_omdb_cache_entry(cache_key: str) -> Optional[dict[str, str]]:
 
 def _latest_model_metrics_from_db() -> dict[str, Any]:
     try:
-        with get_db() as conn:
-            row = conn.execute(
-                """
-                SELECT run_id, model, bce_loss, bpr_loss, mse, ndcg_10, auc, ts
-                FROM model_metrics
-                ORDER BY ts DESC, run_id DESC
-                LIMIT 1
-                """
-            ).fetchone()
+        summary_row = get_collection("model_metrics").find_one(
+            {
+                "$or": [
+                    {"kind": "benchmark_report"},
+                    {"report_metrics": {"$exists": True}},
+                ]
+            },
+            {"_id": 0},
+            sort=[("ts", -1), ("report_generated_at", -1), ("run_id", -1)],
+        )
+    except Exception as exc:
+        log.debug("Metrics summary DB read error: %s", exc)
+    else:
+        if isinstance(summary_row, dict) and summary_row:
+            payload = dict(summary_row)
+            payload.pop("kind", None)
+            payload.setdefault(
+                "updated_at",
+                str(payload.get("ts") or payload.get("report_generated_at") or ""),
+            )
+            return payload
+
+    try:
+        row = get_collection("model_metrics").find_one(
+            {},
+            {
+                "_id": 0,
+                "run_id": 1,
+                "model": 1,
+                "bce_loss": 1,
+                "bpr_loss": 1,
+                "mse": 1,
+                "ndcg_10": 1,
+                "auc": 1,
+                "ts": 1,
+            },
+            sort=[("ts", -1), ("run_id", -1)],
+        )
     except Exception as exc:
         log.debug("Metrics DB read error: %s", exc)
         return {}
@@ -1605,9 +1855,13 @@ def _available_model_artifacts() -> dict[str, list[str]]:
     model_files = {
         "SVD": SVD_PATH.exists(),
         "ALS": ALS_PATH.exists(),
-        "NCF": NCF_PATH.exists() and NCF_ENC_PATH.exists(),
+        "NCF": (NCF_PATH.exists() or NCF_WEIGHTS_PATH.exists()) and NCF_ENC_PATH.exists(),
         "SBERT": SBERT_CACHE.exists() and SBERT_IDX.exists(),
-        "XGB": XGB_PATH.exists(),
+        "XGB": XGB_PATH.exists() or XGB_JSON_PATH.exists(),
+        "LightGBM": LIGHTGBM_MODEL_PATH.exists(),
+        "CatBoost": CATBOOST_MODEL_PATH.exists(),
+        "LogReg": LOGREG_MODEL_PATH.exists(),
+        "RandomForest": RANDOM_FOREST_MODEL_PATH.exists(),
     }
     return {
         "available_models": [name for name, present in model_files.items() if present],
@@ -1618,6 +1872,24 @@ def _available_model_artifacts() -> dict[str, list[str]]:
 def _metrics_section(metrics_block: dict[str, Any], key: str) -> dict[str, Any]:
     section = metrics_block.get(key)
     return cast(dict[str, Any], section) if isinstance(section, dict) else {}
+
+
+def _loss_metric(values: dict[str, Any]) -> tuple[float | None, str]:
+    normalized_loss = _metric_float(values.get("Loss"))
+    normalized_label = str(values.get("LossLabel") or "").strip() or "Loss"
+    if normalized_loss is not None:
+        return normalized_loss, normalized_label
+
+    for legacy_key, legacy_label in (
+        ("BCE", "BCE"),
+        ("LogLoss", "LogLoss"),
+        ("RMSE", "RMSE"),
+    ):
+        numeric_value = _metric_float(values.get(legacy_key))
+        if numeric_value is not None:
+            return numeric_value, legacy_label
+
+    return None, "Loss"
 
 
 def _metrics_from_eval_report() -> dict[str, Any]:
@@ -1635,42 +1907,71 @@ def _metrics_from_eval_report() -> dict[str, Any]:
     artifact_status = _available_model_artifacts()
 
     comparison: list[dict[str, Any]] = []
-    for label, values, loss_key, loss_label in (
-        ("NCF", ncf_metrics, "BCE", "BCE"),
-        ("XGB", xgb_metrics, "LogLoss", "LogLoss"),
-        ("SVD", svd_metrics, "RMSE", "RMSE"),
-    ):
-        if not values:
+    for label, values in metrics_block.items():
+        if not isinstance(values, dict) or not values:
             continue
 
+        loss_value, loss_label = _loss_metric(values)
         comparison.append({
-            "model": label,
+            "model": str(label),
             "auc": _metric_float(values.get("AUC")),
             "f1": _metric_float(values.get("F1")),
             "precision": _metric_float(values.get("Precision")),
             "recall": _metric_float(values.get("Recall")),
-            "loss": _metric_float(values.get(loss_key)),
+            "precision_at_10": _metric_float(values.get("Precision@10")),
+            "recall_at_10": _metric_float(values.get("Recall@10")),
+            "ndcg_10": _metric_float(values.get("NDCG@10")),
+            "hr_10": _metric_float(values.get("HR@10")),
+            "mrr": _metric_float(values.get("MRR")),
+            "loss": loss_value,
             "loss_label": loss_label,
         })
 
+    comparison.sort(
+        key=lambda entry: (
+            1 if entry.get("auc") is None else 0,
+            -(float(entry.get("auc") or 0.0)),
+            str(entry.get("model") or ""),
+        )
+    )
+
     payload: dict[str, Any] = {
+        "run_id": str(report.get("run_id") or ""),
+        "model": str(report.get("model") or "Saved evaluation report"),
         "report_generated_at": str(report.get("generated_at") or ""),
+        "updated_at": str(report.get("generated_at") or ""),
         "test_ratio": _metric_float(report.get("test_ratio")),
         "report_metrics": metrics_block,
         "comparison": comparison,
+        "trained_models": sorted(str(model_name) for model_name in metrics_block.keys()),
         **artifact_status,
     }
+    if isinstance(report.get("sampled_rows"), dict):
+        payload["sampled_rows"] = cast(dict[str, Any], report["sampled_rows"])
+    if isinstance(report.get("targets"), dict):
+        payload["targets"] = cast(dict[str, Any], report["targets"])
+    if isinstance(report.get("skipped_models"), dict):
+        payload["skipped_models"] = cast(dict[str, Any], report["skipped_models"])
+    if isinstance(report.get("legacy_baseline_models"), list):
+        payload["legacy_baseline_models"] = [
+            str(model_name).strip()
+            for model_name in cast(list[Any], report["legacy_baseline_models"])
+            if str(model_name).strip()
+        ]
+    label_threshold = _metric_float(report.get("label_threshold"))
+    if label_threshold is not None:
+        payload["label_threshold"] = label_threshold
 
     field_mapping = {
-        "ncf_bce": ncf_metrics.get("BCE"),
+        "ncf_bce": ncf_metrics.get("BCE") if ncf_metrics.get("BCE") is not None else ncf_metrics.get("Loss"),
         "ncf_auc": ncf_metrics.get("AUC"),
         "ncf_f1": ncf_metrics.get("F1"),
         "ncf_precision": ncf_metrics.get("Precision"),
         "ncf_recall": ncf_metrics.get("Recall"),
-        "svd_mse": svd_metrics.get("RMSE"),
+        "svd_mse": svd_metrics.get("RMSE") if svd_metrics.get("RMSE") is not None else svd_metrics.get("Loss"),
         "xgb_auc": xgb_metrics.get("AUC"),
         "xgb_f1": xgb_metrics.get("F1"),
-        "xgb_logloss": xgb_metrics.get("LogLoss"),
+        "xgb_logloss": xgb_metrics.get("LogLoss") if xgb_metrics.get("LogLoss") is not None else xgb_metrics.get("Loss"),
     }
 
     for field_name, value in field_mapping.items():
@@ -1678,7 +1979,61 @@ def _metrics_from_eval_report() -> dict[str, Any]:
         if numeric_value is not None:
             payload[field_name] = numeric_value
 
+    for payload_key, metric_key in (
+        ("best_auc", "AUC"),
+        ("best_f1", "F1"),
+        ("best_precision_at_10", "Precision@10"),
+        ("best_mrr", "MRR"),
+        ("best_ndcg_10", "NDCG@10"),
+    ):
+        best_model = ""
+        best_value: float | None = None
+        for model_name, values in metrics_block.items():
+            if not isinstance(values, dict):
+                continue
+            numeric_value = _metric_float(values.get(metric_key))
+            if numeric_value is None:
+                continue
+            if best_value is None or numeric_value > best_value:
+                best_value = numeric_value
+                best_model = str(model_name)
+        if best_value is not None:
+            payload[payload_key] = best_value
+            payload[f"{payload_key}_model"] = best_model
+
     return payload
+
+
+def sync_eval_report_to_db(*, log_errors: bool = True) -> bool:
+    payload = _metrics_from_eval_report()
+    if not payload:
+        return False
+
+    report_timestamp = str(payload.get("report_generated_at") or "").strip()
+    run_id = str(payload.get("run_id") or "").strip()
+    if not run_id:
+        fallback_stamp = report_timestamp or _utc_now().isoformat()
+        run_id = f"saved-report-{fallback_stamp.replace(':', '-').replace(' ', '_')}"
+
+    mongo_payload = dict(payload)
+    mongo_payload["run_id"] = run_id
+    mongo_payload["kind"] = "benchmark_report"
+    mongo_payload["ts"] = report_timestamp or _utc_now().isoformat()
+    mongo_payload["db_target"] = DB_PATH
+
+    try:
+        get_collection("model_metrics").update_one(
+            {"run_id": run_id},
+            {"$set": mongo_payload},
+            upsert=True,
+        )
+        return True
+    except Exception as exc:
+        if log_errors:
+            log.warning("MongoDB eval report sync skipped: %s", exc)
+        else:
+            log.debug("MongoDB eval report sync skipped: %s", exc)
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1726,8 +2081,21 @@ class RecommenderEngine:
     # ── BUILD ─────────────────────────────────────────────────────────────────
     def _build(self):
         log.info("Building engine …")
-        with get_db() as conn:
-            self.movies_df = read_sql_df(conn, "SELECT * FROM movies")
+        self.movies_df = read_collection_df(
+            "movies",
+            projection={
+                "_id": 0,
+                "movieId": 1,
+                "title": 1,
+                "genres": 1,
+                "avg_rating": 1,
+                "num_ratings": 1,
+                "sentiment_score": 1,
+                "trending_score": 1,
+                "poster": 1,
+                "source": 1,
+            },
+        )
         if self.movies_df.empty:
             log.warning("No movies in DB")
             return
@@ -1756,26 +2124,31 @@ class RecommenderEngine:
     # ── TF-IDF ────────────────────────────────────────────────────────────────
     def _build_tfidf(self):
         log.info("Building TF-IDF …")
-        with get_db() as conn:
-            tag_agg_sql = (
-                "SELECT movieId, string_agg(tag, ' ') AS tag_text "
-                "FROM tags GROUP BY movieId"
-                if DB_BACKEND == "postgres"
-                else
-                "SELECT movieId, GROUP_CONCAT(tag,' ') AS tag_text "
-                "FROM tags GROUP BY movieId"
+        tags_df = read_collection_df(
+            "tags",
+            projection={"_id": 0, "movieId": 1, "tag": 1},
+        )
+        if not tags_df.empty:
+            tags_agg = (
+                tags_df.fillna("")
+                .groupby("movieId", as_index=False)["tag"]
+                .agg(lambda values: " ".join(str(value).strip() for value in values if str(value).strip()))
+                .rename(columns={"tag": "tag_text"})
             )
-            tags_count_result = conn.execute("SELECT COUNT(*) FROM tags").fetchone()
-            if tags_count_result and tags_count_result[0] > 0:
-                tags_agg = read_sql_df(conn, tag_agg_sql)
-                self.movies_df = self.movies_df.merge(tags_agg, on="movieId", how="left")
-            self.movies_df["tag_text"] = self.movies_df.get("tag_text",
-                pd.Series("", index=self.movies_df.index)).fillna("")
+            self.movies_df = self.movies_df.merge(tags_agg, on="movieId", how="left")
+        self.movies_df["tag_text"] = self.movies_df.get(
+            "tag_text",
+            pd.Series("", index=self.movies_df.index),
+        ).fillna("")
 
-            plots = read_sql_df(
-                conn,
-                'SELECT title as ct, plot, "cast", director FROM omdb_cache',
-            )
+        plots = read_collection_df(
+            "omdb_cache",
+            projection={"_id": 0, "title": 1, "plot": 1, "cast": 1, "director": 1},
+        )
+        if not plots.empty:
+            plots = plots.rename(columns={"title": "ct"})
+        else:
+            plots = pd.DataFrame(columns=["ct", "plot", "cast", "director"])
 
         def _omdb_text(row):
             clean, _ = _clean_title(row["title"])
@@ -1799,11 +2172,12 @@ class RecommenderEngine:
 
     # ── Genome ────────────────────────────────────────────────────────────────
     def _build_genome(self):
-        with get_db() as conn:
-            genome_count_result = conn.execute("SELECT COUNT(*) FROM genome_scores").fetchone()
-            if not genome_count_result or genome_count_result[0] == 0:
-                return
-            genome_df = read_sql_df(conn, "SELECT * FROM genome_scores")
+        genome_df = read_collection_df(
+            "genome_scores",
+            projection={"_id": 0, "movieId": 1, "tagId": 1, "relevance": 1},
+        )
+        if genome_df.empty:
+            return
         pivot = genome_df.pivot_table(index="movieId", columns="tagId",
                                       values="relevance", fill_value=0)
         pivot = pivot.reindex(self.movies_df["movieId"].values, fill_value=0)
@@ -2134,15 +2508,25 @@ class RecommenderEngine:
             "user_genre_affinity": {},
             "user_tag_profiles": {},
         }
+        if XGB_FEATURE_COLS_PATH.exists():
+            try:
+                with open(XGB_FEATURE_COLS_PATH, "r") as f:
+                    self.xgb_feature_context["feature_columns"] = json.load(f)
+            except Exception as exc:
+                log.warning("Could not load xgb_feature_cols.json: %s", exc)
+
         if not XGB_FEATURE_CONTEXT_PATH.exists():
             return
         try:
             with open(XGB_FEATURE_CONTEXT_PATH, "rb") as f:
                 payload = pickle.load(f)
             if isinstance(payload, dict):
-                feature_columns = payload.get("feature_columns") or LEGACY_XGB_FEATURE_COLUMNS
-                self.xgb_feature_context = {
-                    "feature_columns": list(feature_columns),
+                # Don't overwrite the JSON-loaded columns if they were successfully loaded
+                if not XGB_FEATURE_COLS_PATH.exists():
+                    feature_columns = payload.get("feature_columns") or LEGACY_XGB_FEATURE_COLUMNS
+                    self.xgb_feature_context["feature_columns"] = list(feature_columns)
+
+                self.xgb_feature_context.update({
                     "genre_tokens": list(payload.get("genre_tokens") or []),
                     "tag_feature_columns": list(payload.get("tag_feature_columns") or []),
                     "user_feature_columns": list(payload.get("user_feature_columns") or []),
@@ -2153,8 +2537,8 @@ class RecommenderEngine:
                     "user_tag_profiles": {
                         int(user_id): np.asarray(tag_profile, dtype=np.float32)
                         for user_id, tag_profile in dict(payload.get("user_tag_profiles") or {}).items()
-                    },
-                }
+                    }
+                })
         except Exception as exc:
             log.warning("Could not load XGB feature context: %s", exc)
 
@@ -2347,27 +2731,22 @@ class RecommenderEngine:
     def _save_metrics(self, model_name: str):
         try:
             run_id = f"{model_name}_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
-            with get_db() as conn:
-                conn.execute(
-                    "INSERT INTO model_metrics "
-                    "(run_id,model,bce_loss,bpr_loss,mse,ndcg_10,auc,ts) "
-                    "VALUES (?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(run_id) DO UPDATE SET "
-                    "model = excluded.model, "
-                    "bce_loss = excluded.bce_loss, "
-                    "bpr_loss = excluded.bpr_loss, "
-                    "mse = excluded.mse, "
-                    "ndcg_10 = excluded.ndcg_10, "
-                    "auc = excluded.auc, "
-                    "ts = excluded.ts",
-                    (run_id, model_name,
-                     self._metrics.get("ncf_bce"),
-                     self._metrics.get("ncf_bpr"),
-                     self._metrics.get("svd_mse"),
-                     self._metrics.get("ndcg_10"),
-                     self._metrics.get("ncf_auc"),
-                     _utc_now().isoformat())
-                )
+            get_collection("model_metrics").update_one(
+                {"run_id": run_id},
+                {
+                    "$set": {
+                        "run_id": run_id,
+                        "model": model_name,
+                        "bce_loss": self._metrics.get("ncf_bce"),
+                        "bpr_loss": self._metrics.get("ncf_bpr"),
+                        "mse": self._metrics.get("svd_mse"),
+                        "ndcg_10": self._metrics.get("ndcg_10"),
+                        "auc": self._metrics.get("ncf_auc"),
+                        "ts": _utc_now().isoformat(),
+                    }
+                },
+                upsert=True,
+            )
         except Exception as e:
             log.debug("Metrics save error: %s", e)
 
@@ -2765,12 +3144,28 @@ class RecommenderEngine:
     def _get_user_feedback(self, user_id: str):
         liked, disliked = set(), set()
         try:
-            with get_db() as conn:
-                for r in conn.execute(
-                    "SELECT movieId, feedback FROM user_feedback WHERE user_id=?",
-                    (user_id,)
-                ).fetchall():
-                    (liked if r["feedback"] == "like" else disliked).add(r["movieId"])
+            rows = get_collection("user_feedback").find(
+                {"user_id": str(user_id or "").strip().lower()},
+                {"_id": 0, "movieId": 1, "feedback": 1, "rating": 1},
+            )
+            for row in rows:
+                movie_id = row.get("movieId")
+                if movie_id is None:
+                    continue
+                try:
+                    resolved_movie_id = int(movie_id)
+                except Exception:
+                    continue
+                feedback_value = str(row.get("feedback") or "").strip().lower()
+                rating_value = row.get("rating")
+                try:
+                    resolved_rating = int(rating_value) if rating_value is not None else None
+                except Exception:
+                    resolved_rating = None
+                if feedback_value == "like" or (resolved_rating is not None and resolved_rating >= 4):
+                    liked.add(resolved_movie_id)
+                elif feedback_value == "dislike" or (resolved_rating is not None and resolved_rating <= 2):
+                    disliked.add(resolved_movie_id)
         except Exception:
             pass
         return liked, disliked
@@ -2799,18 +3194,13 @@ class RecommenderEngine:
                 cached["poster"] = fallback_poster
             return cached
         try:
-            with get_db() as conn:
-                row = conn.execute(
-                    "SELECT * FROM omdb_cache WHERE title=?", (cache_key,)
-                ).fetchone()
-                if row:
-                    result = {k: row[k] or FALLBACK.get(k, "")
-                              for k in FALLBACK}
-                    # Upgrade stale placeholder poster stored in DB
-                    if _is_missing_poster(result.get("poster", "")):
-                        result["poster"] = fallback_poster
-                    _omdb_cache_set(cache_key, result)
-                    return result
+            row = get_collection("omdb_cache").find_one({"title": cache_key})
+            if row:
+                result = {k: row.get(k) or FALLBACK.get(k, "") for k in FALLBACK}
+                if _is_missing_poster(result.get("poster", "")):
+                    result["poster"] = fallback_poster
+                _omdb_cache_set(cache_key, result)
+                return result
         except Exception:
             pass
         if not OMDB_API_KEY or _OMDB_KEY_INVALID:
@@ -2854,22 +3244,22 @@ class RecommenderEngine:
         if _is_missing_poster(result["poster"]):
             result["poster"] = fallback_poster
         try:
-            with get_db() as conn:
-                conn.execute(
-                    "INSERT INTO omdb_cache "
-                    '(title,poster,plot,"cast",director,imdb_rating,runtime,fetched_at) '
-                    "VALUES (?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(title) DO UPDATE SET "
-                    "poster = excluded.poster, "
-                    "plot = excluded.plot, "
-                    '"cast" = excluded."cast", '
-                    "director = excluded.director, "
-                    "imdb_rating = excluded.imdb_rating, "
-                    "runtime = excluded.runtime, "
-                    "fetched_at = excluded.fetched_at",
-                    (cache_key, result["poster"], result["plot"], result["cast"],
-                     result["director"], result["imdb_rating"], result["runtime"],
-                     _utc_now().isoformat()))
+            get_collection("omdb_cache").update_one(
+                {"title": cache_key},
+                {
+                    "$set": {
+                        "title": cache_key,
+                        "poster": result["poster"],
+                        "plot": result["plot"],
+                        "cast": result["cast"],
+                        "director": result["director"],
+                        "imdb_rating": result["imdb_rating"],
+                        "runtime": result["runtime"],
+                        "fetched_at": _utc_now().isoformat(),
+                    }
+                },
+                upsert=True,
+            )
         except Exception:
             pass
         _omdb_cache_set(cache_key, result)
@@ -3051,10 +3441,18 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _movie_search_candidate(
     title: str,
     genres: str = "",
     avg_rating: Any = 0,
+    num_ratings: Any = 0,
     trending_score: Any = 0,
     movie_id: Any = None,
     poster: str = "",
@@ -3092,6 +3490,7 @@ def _movie_search_candidate(
         "description": str(description or "").strip(),
         "plot": str(plot or description or "").strip(),
         "rating": _safe_float(avg_rating),
+        "num_ratings": int(num_ratings or 0),
         "trending_score": _safe_float(trending_score),
         "source": str(source or "").strip(),
         "_search_title": search_title,
@@ -3123,6 +3522,7 @@ def _row_to_movie_candidate(row: Any) -> dict[str, Any]:
         title=str(row["title"]),
         genres=str(row["genres"] or ""),
         avg_rating=row["avg_rating"],
+        num_ratings=row["num_ratings"] if "num_ratings" in row.keys() else 0,
         trending_score=row["trending_score"] if "trending_score" in row.keys() else 0,
         movie_id=row["movieId"],
         poster=str(row["poster"] or ""),
@@ -3370,29 +3770,66 @@ def _lightweight_catalog_movies() -> list[dict[str, Any]]:
     if _LIGHTWEIGHT_TITLE_CATALOG_CACHE:
         return [dict(movie) for movie in _LIGHTWEIGHT_TITLE_CATALOG_CACHE]
 
-    movies_path = DATA_DIR / "movies.csv"
-    if not movies_path.exists():
-        return []
+    if DB_BACKEND == "mongodb":
+        try:
+            rows = list(
+                get_collection("movies").find(
+                    {},
+                    {
+                        "_id": 0,
+                        "movieId": 1,
+                        "title": 1,
+                        "genres": 1,
+                        "avg_rating": 1,
+                        "num_ratings": 1,
+                        "trending_score": 1,
+                        "poster": 1,
+                        "source": 1,
+                    },
+                )
+            )
+        except Exception as exc:
+            log.warning("Lightweight Mongo movie load failed: %s", exc)
+            rows = []
 
-    try:
-        movies_df = pd.read_csv(
-            movies_path,
-            usecols=["movieId", "title", "genres"],
-        )
-    except Exception as exc:
-        log.warning("Lightweight movies.csv load failed: %s", exc)
-        return []
+        _LIGHTWEIGHT_TITLE_CATALOG_CACHE = [
+            _movie_search_candidate(
+                title=str(row.get("title") or ""),
+                genres=str(row.get("genres") or ""),
+                avg_rating=row.get("avg_rating") or 0,
+                num_ratings=row.get("num_ratings") or 0,
+                trending_score=row.get("trending_score") or 0,
+                movie_id=row.get("movieId"),
+                poster=str(row.get("poster") or ""),
+                source=str(row.get("source") or "catalog"),
+            )
+            for row in rows
+            if str(row.get("title") or "").strip()
+        ]
+    else:
+        movies_path = DATA_DIR / "movies.csv"
+        if not movies_path.exists():
+            return []
 
-    movies_df["genres"] = movies_df["genres"].fillna("").str.replace("|", " ", regex=False)
-    _LIGHTWEIGHT_TITLE_CATALOG_CACHE = [
-        _movie_search_candidate(
-            title=str(row.title),
-            genres=str(row.genres or ""),
-            movie_id=row.movieId,
-            source="ml25m_csv",
-        )
-        for row in movies_df.itertuples(index=False)
-    ]
+        try:
+            movies_df = pd.read_csv(
+                movies_path,
+                usecols=["movieId", "title", "genres"],
+            )
+        except Exception as exc:
+            log.warning("Lightweight movies.csv load failed: %s", exc)
+            return []
+
+        movies_df["genres"] = movies_df["genres"].fillna("").str.replace("|", " ", regex=False)
+        _LIGHTWEIGHT_TITLE_CATALOG_CACHE = [
+            _movie_search_candidate(
+                title=str(row.title),
+                genres=str(row.genres or ""),
+                movie_id=row.movieId,
+                source="ml25m_csv",
+            )
+            for row in movies_df.itertuples(index=False)
+        ]
     return [dict(movie) for movie in _LIGHTWEIGHT_TITLE_CATALOG_CACHE]
 
 
@@ -3530,63 +3967,7 @@ def _curated_movies_for_genre(
 
 
 def _search_movies_from_database(query: str, limit: int = 50) -> list[dict[str, Any]]:
-    normalized_query = _normalize_search_text(query)
-    if not normalized_query:
-        return []
-
-    like_query = f"%{normalized_query.replace(' ', '%')}%"
-    tokens = [token for token in normalized_query.split() if len(token) > 1][:4]
-    where_clauses = ["lower(title) LIKE ?", "lower(genres) LIKE ?"]
-    params: list[Any] = [like_query, like_query]
-
-    for token in tokens:
-        token_like = f"%{token}%"
-        where_clauses.extend(["lower(title) LIKE ?", "lower(genres) LIKE ?"])
-        params.extend([token_like, token_like])
-
-    candidate_limit = min(max(limit * 8, 250), 500)
-    rows: list[Any] = []
-
-    try:
-        with get_db() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT movieId, title, genres, avg_rating, num_ratings, trending_score, poster, source
-                FROM movies
-                WHERE {' OR '.join(where_clauses)}
-                ORDER BY
-                    CASE WHEN lower(coalesce(source, '')) = 'admin' THEN 0 ELSE 1 END,
-                    CASE WHEN num_ratings > 0 THEN 0 ELSE 1 END,
-                    trending_score DESC,
-                    avg_rating DESC,
-                    title ASC
-                LIMIT ?
-                """,
-                tuple(params + [candidate_limit]),
-            ).fetchall()
-    except Exception as exc:
-        log.warning("Movie search DB load failed: %s", exc)
-
-    ranked_candidates = _rank_search_candidates(
-        [_row_to_movie_candidate(row) for row in rows],
-        query,
-        limit=limit,
-    )
-    results = [_candidate_to_movie_payload(candidate) for candidate in ranked_candidates]
-
-    if len(results) < min(limit, 5):
-        known_keys = {
-            str(movie.get("movie_key") or "")
-            for movie in results
-            if str(movie.get("movie_key") or "")
-        }
-        fallback_results = _search_movies_from_lightweight_catalog(
-            query,
-            limit=max(0, limit - len(results)),
-            exclude_keys=known_keys,
-        )
-        results.extend(fallback_results[: max(0, limit - len(results))])
-
+    results = _search_movies_from_lightweight_catalog(query, limit=limit)
     if len(results) < min(limit, 5):
         known_keys = {str(movie.get("movie_key") or "") for movie in results}
         curated_results = [
@@ -3595,7 +3976,6 @@ def _search_movies_from_database(query: str, limit: int = 50) -> list[dict[str, 
             if str(movie.get("movie_key") or "") not in known_keys
         ]
         results.extend(curated_results[: max(0, limit - len(results))])
-
     return results[:limit]
 
 
@@ -3675,155 +4055,113 @@ def _recommend_from_database(
     mood: Optional[str] = None,
     user_email: Optional[str] = None,
 ) -> dict[str, Any]:
-    anchor = next(iter(_search_movies_from_database(title, limit=1)), None)
-    if anchor is None:
-        return _recommend_from_curated_catalog(title, top_n, mood, user_email=user_email)
+    if DB_BACKEND == "mongodb":
+        anchor = next(iter(_search_movies_from_lightweight_catalog(title, limit=1)), None)
+        if anchor is None:
+            return _recommend_from_curated_catalog(title, top_n, mood, user_email=user_email)
 
-    preference_context = _load_user_preference_context(user_email)
-    anchor_genres = {
-        token
-        for token in _normalize_search_text(str(anchor.get("genres") or "")).split()
-        if len(token) > 2
-    }
-    anchor_tokens = _meaningful_title_tokens(
-        str(anchor.get("clean_title") or anchor.get("title") or "")
-    )
-    mood_genres = {
-        _normalize_search_text(genre)
-        for genre in MOOD_GENRE_MAP.get((mood or "").lower(), [])
-    }
-    genre_terms = list(anchor_genres)[:4]
-    candidate_limit = min(max(top_n * 8, 250), 500)
-    if preference_context is not None:
-        candidate_limit = min(max(top_n * 10, 400), 800)
-
-    query = """
-        SELECT movieId, title, genres, avg_rating, num_ratings, trending_score, poster
-        FROM movies
-    """
-    params: list[Any] = []
-
-    if genre_terms:
-        query += " WHERE " + " OR ".join("lower(genres) LIKE ?" for _ in genre_terms)
-        params.extend([f"%{term}%" for term in genre_terms])
-
-    query += """
-        ORDER BY
-            CASE WHEN num_ratings > 0 THEN 0 ELSE 1 END,
-            trending_score DESC,
-            avg_rating DESC,
-            title ASC
-        LIMIT ?
-    """
-    params.append(candidate_limit)
-
-    rows: list[Any] = []
-    try:
-        with get_db() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-    except Exception as exc:
-        log.warning("Recommendation DB load failed: %s", exc)
-
-    anchor_key = str(anchor.get("movie_key") or "")
-    anchor_year = str(anchor.get("year") or "")
-    anchor_title = str(anchor.get("clean_title") or anchor.get("title") or title)
-    ranked: list[tuple[float, dict[str, Any]]] = []
-    candidate_movies: list[dict[str, Any]] = [
-        movie
-        for movie in _search_movies_from_database(anchor_title, limit=max(top_n * 2, 20))
-        if str(movie.get("movie_key") or "") != anchor_key
-    ]
-    candidate_movies.extend(_row_to_movie_payload(row) for row in rows)
-    seen_candidate_keys: set[str] = set()
-
-    for movie in candidate_movies:
-        movie_key = str(movie.get("movie_key") or "")
-        if not movie_key or movie_key == anchor_key or movie_key in seen_candidate_keys:
-            continue
-        seen_candidate_keys.add(movie_key)
-
-        movie_genres = {
+        preference_context = _load_user_preference_context(user_email)
+        anchor_genres = {
             token
-            for token in _normalize_search_text(str(movie.get("genres") or "")).split()
+            for token in _normalize_search_text(str(anchor.get("genres") or "")).split()
             if len(token) > 2
         }
-        movie_tokens = _meaningful_title_tokens(
-            str(movie.get("clean_title") or movie.get("title") or "")
+        anchor_tokens = _meaningful_title_tokens(
+            str(anchor.get("clean_title") or anchor.get("title") or "")
         )
+        mood_genres = {
+            _normalize_search_text(genre)
+            for genre in MOOD_GENRE_MAP.get((mood or "").lower(), [])
+        }
+        anchor_key = str(anchor.get("movie_key") or "")
+        anchor_year = str(anchor.get("year") or "")
 
-        shared_genres = len(anchor_genres & movie_genres)
-        shared_title_tokens = len(anchor_tokens & movie_tokens)
-        full_title_match_bonus = (
-            40 if anchor_tokens and shared_title_tokens == len(anchor_tokens) else 0
+        candidate_pool = _lightweight_catalog_movies()
+        if preference_context is not None:
+            candidate_pool = candidate_pool[: min(len(candidate_pool), max(top_n * 20, 2000))]
+
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        seen_candidate_keys: set[str] = set()
+
+        for movie in candidate_pool:
+            movie_key = str(movie.get("movie_key") or "")
+            if not movie_key or movie_key == anchor_key or movie_key in seen_candidate_keys:
+                continue
+            seen_candidate_keys.add(movie_key)
+
+            movie_genres = {
+                token
+                for token in _normalize_search_text(str(movie.get("genres") or "")).split()
+                if len(token) > 2
+            }
+            if anchor_genres and not (anchor_genres & movie_genres):
+                continue
+
+            movie_tokens = _meaningful_title_tokens(
+                str(movie.get("clean_title") or movie.get("title") or "")
+            )
+            shared_genres = len(anchor_genres & movie_genres)
+            shared_title_tokens = len(anchor_tokens & movie_tokens)
+            full_title_match_bonus = (
+                40 if anchor_tokens and shared_title_tokens == len(anchor_tokens) else 0
+            )
+            mood_bonus = 10 if mood_genres & movie_genres else 0
+
+            same_era = 0
+            movie_year = str(movie.get("year") or "")
+            if anchor_year.isdigit() and movie_year.isdigit():
+                same_era = max(0, 8 - min(abs(int(anchor_year) - int(movie_year)), 8))
+
+            score = (
+                shared_genres * 22
+                + shared_title_tokens * 24
+                + full_title_match_bonus
+                + mood_bonus
+                + same_era
+                + float(movie.get("rating") or 0)
+                + float(movie.get("trending_score") or 0) * 8.0
+            )
+            ranked.append((score, movie))
+
+        ranked.sort(
+            key=lambda item: (
+                item[0],
+                float(item[1].get("rating") or 0),
+                float(item[1].get("trending_score") or 0),
+            ),
+            reverse=True,
         )
-        mood_bonus = 10 if mood_genres & movie_genres else 0
+        rerank_pool_size = top_n
+        if preference_context is not None:
+            rerank_pool_size = min(len(ranked), max(top_n * 3, 75))
 
-        same_era = 0
-        movie_year = str(movie.get("year") or "")
-        if anchor_year.isdigit() and movie_year.isdigit():
-            same_era = max(0, 8 - min(abs(int(anchor_year) - int(movie_year)), 8))
-
-        try:
-            numeric_rating = float(movie.get("rating") or 0)
-        except Exception:
-            numeric_rating = 0.0
-
-        try:
-            trending_bonus = float(movie.get("trending_score") or 0) * 8.0
-        except Exception:
-            trending_bonus = 0.0
-
-        score = (
-            shared_genres * 22
-            + shared_title_tokens * 24
-            + full_title_match_bonus
-            + mood_bonus
-            + same_era
-            + numeric_rating
-            + trending_bonus
+        results = _apply_preference_ranking(
+            [dict(movie) for _, movie in ranked[:rerank_pool_size]],
+            user_email,
+            limit=top_n,
         )
-        ranked.append((score, movie))
+        if len(results) < top_n:
+            known_keys = {str(movie.get("movie_key") or "") for movie in results}
+            known_keys.add(anchor_key)
+            curated_results = [
+                movie
+                for movie in _recommend_from_curated_catalog(
+                    title,
+                    max(top_n * 2, 50),
+                    mood,
+                    user_email=user_email,
+                )["results"]
+                if str(movie.get("movie_key") or "") not in known_keys
+            ]
+            results.extend(curated_results[: max(0, top_n - len(results))])
 
-    ranked.sort(
-        key=lambda item: (
-            item[0],
-            float(item[1].get("rating") or 0),
-            float(item[1].get("trending_score") or 0),
-        ),
-        reverse=True,
-    )
+        return {
+            "resolved_title": str(anchor.get("clean_title") or anchor.get("title") or title),
+            "mood_applied": mood,
+            "results": results[:top_n],
+        }
 
-    preference_context = _load_user_preference_context(user_email)
-    rerank_pool_size = top_n
-    if preference_context is not None:
-        rerank_pool_size = min(len(ranked), max(top_n * 3, 75))
-
-    results = _apply_preference_ranking(
-        [dict(movie) for _, movie in ranked[:rerank_pool_size]],
-        user_email,
-        limit=top_n,
-    )
-    if len(results) < top_n:
-        known_keys = {str(movie.get("movie_key") or "") for movie in results}
-        known_keys.add(anchor_key)
-        curated_results = [
-            movie
-            for movie in _recommend_from_curated_catalog(
-                title,
-                max(top_n * 2, 50),
-                mood,
-                user_email=user_email,
-            )["results"]
-            if str(movie.get("movie_key") or "") not in known_keys
-        ]
-        results.extend(curated_results[: max(0, top_n - len(results))])
-
-    results = _apply_preference_ranking(results, user_email, limit=top_n)
-    return {
-        "resolved_title": str(anchor.get("clean_title") or anchor.get("title") or title),
-        "mood_applied": mood,
-        "results": results[:top_n],
-    }
+    return _recommend_from_curated_catalog(title, top_n, mood, user_email=user_email)
 
 
 def prefetch_omdb_cache(
@@ -3838,27 +4176,23 @@ def prefetch_omdb_cache(
     missing = 0
     cached = 0
 
-    with get_db() as conn:
-        cached_keys = {
-            str(row["title"])
-            for row in conn.execute("SELECT title FROM omdb_cache").fetchall()
-        }
-        query = """
-            SELECT title
-            FROM movies
-            ORDER BY num_ratings DESC, avg_rating DESC, title ASC
-        """
-        params: tuple[Any, ...] = ()
-        if limit is not None:
-            query += " LIMIT ?"
-            params = (limit,)
-        rows = conn.execute(query, params).fetchall()
+    cached_keys = {
+        str(row.get("title") or "")
+        for row in get_collection("omdb_cache").find({}, {"_id": 0, "title": 1})
+        if str(row.get("title") or "").strip()
+    }
+    cursor = get_collection("movies").find({}, {"_id": 0, "title": 1}).sort(
+        [("num_ratings", -1), ("avg_rating", -1), ("title", 1)]
+    )
+    if limit is not None:
+        cursor = cursor.limit(int(limit))
+    rows = list(cursor)
 
     for start in range(0, len(rows), batch_size):
         batch = rows[start:start + batch_size]
         pending: list[tuple[str, str]] = []
         for row in batch:
-            title = str(row["title"])
+            title = str(row.get("title") or "")
             clean_title, year = _clean_title(title)
             cache_key = f"{clean_title}|{year}"
             processed += 1
@@ -3917,6 +4251,8 @@ def browse_mood(mood: str) -> list:
 
 def get_model_metrics() -> dict:
     report_metrics = _metrics_from_eval_report()
+    if report_metrics:
+        sync_eval_report_to_db(log_errors=False)
     engine = RecommenderEngine._instance
     if engine is not None and getattr(engine, "_ready", False):
         engine_metrics = engine.get_metrics()
@@ -4140,17 +4476,59 @@ def record_feedback(user_id: str, movie_id: int, feedback: str) -> bool:
     if feedback not in ("like", "dislike", "neutral"):
         return False
     try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO user_feedback "
-                "(user_id,movieId,feedback,ts) VALUES (?,?,?,?) "
-                "ON CONFLICT(user_id,movieId) DO UPDATE SET "
-                "feedback = excluded.feedback, "
-                "ts = excluded.ts",
-                (user_id, movie_id, feedback, _utc_now().isoformat()))
+        normalized_user_id = str(user_id or "").strip().lower()
+        resolved_movie_id = int(movie_id)
+        get_collection("user_feedback").update_one(
+            {"user_id": normalized_user_id, "movieId": resolved_movie_id},
+            {
+                "$set": {
+                    "feedback": feedback,
+                    "ts": _utc_now().isoformat(),
+                },
+                "$setOnInsert": {
+                    "user_id": normalized_user_id,
+                    "movieId": resolved_movie_id,
+                },
+            },
+            upsert=True,
+        )
         return True
     except Exception as e:
         log.error("Feedback error: %s", e)
+        return False
+
+
+def save_movie_rating(user_id: str, movie_id: int, rating: int) -> bool:
+    try:
+        resolved_rating = int(rating)
+    except Exception:
+        return False
+    if resolved_rating < 1 or resolved_rating > 5:
+        return False
+
+    feedback = "like" if resolved_rating >= 4 else "dislike" if resolved_rating <= 2 else "neutral"
+    normalized_user_id = str(user_id or "").strip().lower()
+    resolved_movie_id = int(movie_id)
+
+    try:
+        get_collection("user_feedback").update_one(
+            {"user_id": normalized_user_id, "movieId": resolved_movie_id},
+            {
+                "$set": {
+                    "feedback": feedback,
+                    "rating": resolved_rating,
+                    "ts": _utc_now().isoformat(),
+                },
+                "$setOnInsert": {
+                    "user_id": normalized_user_id,
+                    "movieId": resolved_movie_id,
+                },
+            },
+            upsert=True,
+        )
+        return True
+    except Exception as exc:
+        log.error("Rating save error: %s", exc)
         return False
 
 def add_movies_to_db(movies_list: list) -> int:
@@ -4194,38 +4572,9 @@ def add_movies_to_db(movies_list: list) -> int:
         })
     if not rows:
         return 0
-    with get_db() as conn:
-        conn.executemany(
-            """
-            INSERT INTO movies (
-                movieId,
-                title,
-                genres,
-                avg_rating,
-                num_ratings,
-                sentiment_score,
-                trending_score,
-                poster,
-                source
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    row["movieId"],
-                    row["title"],
-                    row["genres"],
-                    row["avg_rating"],
-                    row["num_ratings"],
-                    row["sentiment_score"],
-                    row["trending_score"],
-                    row["poster"],
-                    row["source"],
-                )
-                for row in rows
-            ],
-        )
+    get_collection("movies").insert_many(rows, ordered=False)
     _HOME_MOVIES_CACHE.clear()
+    _LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
     RecommenderEngine.reset()
     return len(rows)
 
@@ -4270,21 +4619,8 @@ def _admin_catalog_filters(
 
 def _admin_catalog_genres() -> list[str]:
     genres: set[str] = set()
-    try:
-        with get_db() as conn:
-            rows = conn.execute(
-                """
-                SELECT genres
-                FROM movies
-                WHERE trim(genres) != ''
-                """
-            ).fetchall()
-    except Exception as exc:
-        log.debug("Admin genre load failed: %s", exc)
-        return []
-
-    for row in rows:
-        raw_value = str(row["genres"] or "")
+    for movie in _lightweight_catalog_movies():
+        raw_value = str(movie.get("genres") or "")
         if "no genres listed" in raw_value.lower():
             continue
         for genre_value in raw_value.replace("|", " ").replace(",", " ").split():
@@ -4301,72 +4637,97 @@ def list_admin_movies(
     search: Optional[str] = None,
     genre: Optional[str] = None,
 ) -> dict[str, Any]:
-    where_sql, params = _admin_catalog_filters(search=search, genre=genre)
-    safe_offset = max(0, int(offset or 0))
+    if DB_BACKEND == "mongodb":
+        safe_offset = max(0, int(offset or 0))
+        safe_limit = None if limit is None else max(1, int(limit))
+        search_tokens = [token for token in _normalize_search_text(search or "").split() if token]
+        genre_tokens = [token for token in _normalize_search_text(genre or "").split() if token]
 
-    count_query = f"SELECT COUNT(*) AS total FROM movies{where_sql}"
-    query = """
-        SELECT movieId, title, genres, avg_rating, poster, source
-        FROM movies
-    """
-    query += where_sql
-    query += """
-        ORDER BY
-            CASE WHEN source = 'admin' THEN 0 ELSE 1 END,
-            CASE WHEN source = 'admin' THEN -movieId ELSE movieId END DESC,
-            avg_rating DESC,
-            title ASC
-    """
+        filtered: list[dict[str, Any]] = []
+        for movie in _lightweight_catalog_movies():
+            haystack = _normalize_search_text(
+                " ".join(
+                    [
+                        str(movie.get("title") or ""),
+                        str(movie.get("clean_title") or ""),
+                        str(movie.get("genres") or ""),
+                        str(movie.get("year") or ""),
+                    ]
+                )
+            )
+            genre_text = _normalize_search_text(str(movie.get("genres") or ""))
+            if search_tokens and not all(token in haystack for token in search_tokens):
+                continue
+            if genre_tokens and not all(token in genre_text for token in genre_tokens):
+                continue
+            filtered.append(movie)
 
-    with get_db() as conn:
-        count_result = conn.execute(count_query, tuple(params)).fetchone()
-        total = int(count_result["total"] or 0) if count_result else 0
-        row_params: list[Any] = list(params)
-        if limit is not None:
-            safe_limit = max(1, int(limit))
-            query += " LIMIT ? OFFSET ?"
-            row_params.extend([safe_limit, safe_offset])
-        rows = conn.execute(query, tuple(row_params)).fetchall()
+        filtered.sort(
+            key=lambda movie: (
+                0 if str(movie.get("source") or "").strip().lower() == "admin" else 1,
+                -(
+                    -_safe_int(movie.get("movie_id"), default=0)
+                    if str(movie.get("source") or "").strip().lower() == "admin"
+                    else _safe_int(movie.get("movie_id"), default=0)
+                ),
+                -float(movie.get("rating") or 0),
+                str(movie.get("title") or "").lower(),
+            )
+        )
+        total = len(filtered)
+        page = filtered[safe_offset:] if safe_limit is None else filtered[safe_offset : safe_offset + safe_limit]
 
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        source = str(row["source"] or "").strip().lower() or "catalog"
-        movie = _row_to_movie_payload(row)
-        movie.update({
-            "source": source,
-            "source_label": "Admin" if source == "admin" else "Catalog",
-            "can_delete": source == "admin",
-        })
-        items.append(movie)
+        items: list[dict[str, Any]] = []
+        for movie in page:
+            payload = _candidate_to_movie_payload(movie)
+            source = str(movie.get("source") or "").strip().lower() or "catalog"
+            payload.update(
+                {
+                    "source": source,
+                    "source_label": "Admin" if source == "admin" else "Catalog",
+                    "can_delete": source == "admin",
+                }
+            )
+            items.append(payload)
+
+        return {
+            "items": items,
+            "total": total,
+            "limit": safe_limit if safe_limit is not None else total,
+            "offset": safe_offset,
+            "genres": _admin_catalog_genres(),
+            "has_more": (safe_offset + len(items)) < total,
+        }
 
     return {
-        "items": items,
-        "total": total,
-        "limit": limit if limit is not None else total,
-        "offset": safe_offset,
+        "items": [],
+        "total": 0,
+        "limit": 0 if limit is None else max(1, int(limit)),
+        "offset": max(0, int(offset or 0)),
         "genres": _admin_catalog_genres(),
-        "has_more": (safe_offset + len(items)) < total,
+        "has_more": False,
     }
 
 
 def delete_movie_from_db(movie_id: int) -> bool:
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT source FROM movies WHERE movieId = ?",
-            (movie_id,),
-        ).fetchone()
-        if not row:
-            return False
-        if str(row["source"] or "").strip().lower() != "admin":
-            return False
+    row = get_collection("movies").find_one(
+        {"movieId": int(movie_id)},
+        {"_id": 0, "source": 1},
+    )
+    if not row:
+        return False
+    if str(row.get("source") or "").strip().lower() != "admin":
+        return False
 
-        conn.execute("DELETE FROM tags WHERE movieId = ?", (movie_id,))
-        conn.execute("DELETE FROM genome_scores WHERE movieId = ?", (movie_id,))
-        conn.execute("DELETE FROM rating_timestamps WHERE movieId = ?", (movie_id,))
-        conn.execute("DELETE FROM user_feedback WHERE movieId = ?", (movie_id,))
-        conn.execute("DELETE FROM movies WHERE movieId = ?", (movie_id,))
+    get_collection("ratings").delete_many({"movieId": int(movie_id)})
+    get_collection("tags").delete_many({"movieId": int(movie_id)})
+    get_collection("genome_scores").delete_many({"movieId": int(movie_id)})
+    get_collection("rating_timestamps").delete_many({"movieId": int(movie_id)})
+    get_collection("user_feedback").delete_many({"movieId": int(movie_id)})
+    get_collection("movies").delete_one({"movieId": int(movie_id)})
 
     _HOME_MOVIES_CACHE.clear()
+    _LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
     RecommenderEngine.reset()
     return True
 
@@ -4390,60 +4751,129 @@ def get_home_movies(
         # Pull a wider pool so preference reranking can surface better matches.
         candidate_limit = min(max(limit * 8, 160), 500)
 
-    query = """
-        SELECT movieId, title, genres, avg_rating, num_ratings, trending_score, poster, source
-        FROM movies
-    """
-    params: list[Any] = []
-    if normalized_genre:
-        genre_expression = "replace(replace(lower(genres), '-', ' '), '|', ' ')"
+    if DB_BACKEND == "mongodb":
         genre_tokens = [token for token in normalized_genre.split() if token]
-        query += " WHERE " + " AND ".join(f"{genre_expression} LIKE ?" for _ in genre_tokens)
-        params.extend([f"%{token}%" for token in genre_tokens])
-    query += """
-        ORDER BY
-            CASE WHEN source = 'admin' THEN 0 ELSE 1 END,
-            CASE WHEN num_ratings > 0 THEN 0 ELSE 1 END,
-            trending_score DESC,
-            avg_rating DESC,
-            title ASC
-        LIMIT ?
-    """
-    params.append(candidate_limit)
+        candidates = []
+        for movie in _lightweight_catalog_movies():
+            genre_text = _normalize_search_text(str(movie.get("genres") or ""))
+            if genre_tokens and not all(token in genre_text for token in genre_tokens):
+                continue
+            candidates.append(movie)
 
-    rows: list[Any] = []
-    try:
-        with get_db() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-    except Exception as exc:
-        log.warning("Home movies DB load failed: %s", exc)
-
-    results = [_row_to_movie_payload(row) for row in rows]
-
-    if len(results) < candidate_limit:
-        known_keys = {str(movie.get("movie_key") or "") for movie in results}
-        results.extend(
-            _curated_movies_for_genre(
-                genre,
-                known_keys,
-                candidate_limit - len(results),
+        candidates.sort(
+            key=lambda movie: (
+                0 if str(movie.get("source") or "").strip().lower() == "admin" else 1,
+                0 if int(movie.get("num_ratings") or 0) > 0 else 1,
+                -float(movie.get("trending_score") or 0),
+                -float(movie.get("rating") or 0),
+                str(movie.get("title") or "").lower(),
             )
         )
+        results = [_candidate_to_movie_payload(movie) for movie in candidates[:candidate_limit]]
 
-    if not results:
-        results = _curated_movies_for_genre(genre, set(), candidate_limit)
+        if len(results) < candidate_limit:
+            known_keys = {str(movie.get("movie_key") or "") for movie in results}
+            results.extend(
+                _curated_movies_for_genre(
+                    genre,
+                    known_keys,
+                    candidate_limit - len(results),
+                )
+            )
 
+        if not results:
+            results = _curated_movies_for_genre(genre, set(), candidate_limit)
+
+        results = _hydrate_visible_movie_posters(
+            results,
+            max_items=min(limit, HOME_POSTER_HYDRATE_LIMIT),
+        )
+        results = _apply_preference_ranking(results, user_email, limit=limit)
+
+        _HOME_MOVIES_CACHE[cache_key] = {
+            "results": results[:limit],
+            "expires_at": now + HOME_CACHE_TTL_SECONDS,
+        }
+        return results[:limit]
+
+    results = _curated_movies_for_genre(genre, set(), candidate_limit)
     results = _hydrate_visible_movie_posters(
         results,
         max_items=min(limit, HOME_POSTER_HYDRATE_LIMIT),
     )
     results = _apply_preference_ranking(results, user_email, limit=limit)
-
     _HOME_MOVIES_CACHE[cache_key] = {
         "results": results[:limit],
         "expires_at": now + HOME_CACHE_TTL_SECONDS,
     }
     return results[:limit]
+
+
+def get_movie_details(
+    movie_id: int,
+    user_email: Optional[str] = None,
+) -> dict[str, Any] | None:
+    resolved_movie_id = int(movie_id)
+    candidate = next(
+        (
+            movie
+            for movie in _lightweight_catalog_movies()
+            if _safe_int(movie.get("movie_id"), default=0) == resolved_movie_id
+        ),
+        None,
+    )
+    if candidate is None:
+        row = get_collection("movies").find_one(
+            {"movieId": resolved_movie_id},
+            {
+                "_id": 0,
+                "movieId": 1,
+                "title": 1,
+                "genres": 1,
+                "avg_rating": 1,
+                "num_ratings": 1,
+                "trending_score": 1,
+                "poster": 1,
+                "source": 1,
+            },
+        )
+        if row is None:
+            return None
+        candidate = _row_to_movie_candidate(row)
+
+    payload = _hydrate_movie_payload(_candidate_to_movie_payload(candidate))
+    source = str(candidate.get("source") or "").strip().lower() or "catalog"
+    payload.update(
+        {
+            "source": source,
+            "source_label": "Admin" if source == "admin" else "Catalog",
+            "can_delete": source == "admin",
+            "user_feedback": None,
+            "user_rating": None,
+        }
+    )
+
+    if user_email:
+        feedback = get_collection("user_feedback").find_one(
+            {
+                "user_id": str(user_email or "").strip().lower(),
+                "movieId": resolved_movie_id,
+            },
+            {"_id": 0, "feedback": 1, "rating": 1},
+        )
+        if feedback:
+            payload["user_feedback"] = str(feedback.get("feedback") or "").strip() or None
+            try:
+                rating_value = feedback.get("rating")
+                payload["user_rating"] = (
+                    _safe_int(rating_value)
+                    if rating_value not in (None, "")
+                    else None
+                )
+            except Exception:
+                payload["user_rating"] = None
+
+    return payload
 
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────

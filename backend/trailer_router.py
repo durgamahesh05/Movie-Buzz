@@ -1,129 +1,191 @@
 """
 trailer_router.py
 ==================
-FastAPI router for movie trailer functionality.
-
-Flow:
-  1. Client calls GET /api/trailer/{movie_id}
-  2. Check trailer cache table — return immediately if hit
-  3. On cache miss → call OMDB API for that movie
-  4. OMDB returns a "Website" or embedded trailer URL (YouTube link)
-  5. Extract YouTube video ID from the URL
-  6. Cache video_id in the database with movie_id key
-  7. Return { video_id, embed_url, title } to frontend
-
-Mount this router in your main app:
-    from trailer_router import router as trailer_router
-    app.include_router(trailer_router)
+FastAPI router for movie trailer functionality backed by MongoDB.
 """
 
-import os
-import re
+from __future__ import annotations
+
 import logging
-from typing import Optional, Any
+import re
+from typing import Any, Optional
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from pymongo import DESCENDING
 
 from config import env
-from db import DB_BACKEND, format_db_target, get_db, get_table_columns
+from db import get_collection, get_db
 
 log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Config  (reads from env vars — set these in your .env / systemd unit)
-# ─────────────────────────────────────────────────────────────────────────────
 OMDB_API_KEY = env("OMDB_API_KEY", "MOVIEBUZZ_OMDB_API_KEY", default="")
-OMDB_BASE    = "https://www.omdbapi.com/"
-DB_PATH      = format_db_target()
+OMDB_BASE = "https://www.omdbapi.com/"
+TMDB_API_KEY = env("TMDB_API_KEY", "THEMOVIEDB_API_KEY", "MOVIEBUZZ_TMDB_API_KEY", default="")
+TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
+TMDB_VIDEOS_URL_TEMPLATE = "https://api.themoviedb.org/3/movie/{movie_id}/videos"
 
 router = APIRouter(prefix="/api", tags=["trailer"])
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DB helpers
-# ─────────────────────────────────────────────────────────────────────────────
-def _get_conn():
-    return get_db()
+
+def _ensure_trailer_indexes() -> None:
+    try:
+        get_db().ensure_indexes()
+    except Exception as exc:  # pragma: no cover - depends on live MongoDB
+        log.warning("MongoDB trailer index check failed: %s", exc)
 
 
-def _trailer_schema_sql() -> str:
-    return """
-        CREATE TABLE IF NOT EXISTS trailer_cache (
-            movie_id   INTEGER PRIMARY KEY,
-            imdb_id    TEXT,
-            title      TEXT,
-            year       TEXT,
-            video_id   TEXT,
-            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
+def _trailer_cache():
+    return get_collection("trailer_cache")
 
 
-def _ensure_trailer_table():
-    """Create trailer_cache table if it doesn't exist yet."""
-    with _get_conn() as conn:
-        conn.execute(_trailer_schema_sql())
-
-
-_ensure_trailer_table()
-
-
-def _movie_table_columns() -> set[str]:
-    with _get_conn() as conn:
-        return get_table_columns(conn, "movies")
+def _movies():
+    return get_collection("movies")
 
 
 def _get_movie_lookup(movie_id: int) -> Optional[dict[str, Any]]:
-    columns = _movie_table_columns()
-    select_columns = ["title"]
-    if "imdb_id" in columns:
-        select_columns.append("imdb_id")
-
-    query = f"SELECT {', '.join(select_columns)} FROM movies WHERE movieId = ?"
-    with _get_conn() as conn:
-        row = conn.execute(query, (movie_id,)).fetchone()
+    row = _movies().find_one(
+        {"movieId": int(movie_id)},
+        {"_id": 0, "title": 1, "imdb_id": 1},
+    )
     if not row:
         return None
-    payload = {
-        "title": row["title"],
-        "imdb_id": row["imdb_id"] if "imdb_id" in row.keys() else None,
+    return {
+        "title": str(row.get("title") or "").strip(),
+        "imdb_id": str(row.get("imdb_id") or "").strip() or None,
     }
-    return payload
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  YouTube video ID extraction
-# ─────────────────────────────────────────────────────────────────────────────
 _YT_PATTERNS = [
-    # Standard watch URL:  https://www.youtube.com/watch?v=VIDEO_ID
     r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([A-Za-z0-9_\-]{11})",
 ]
 
+
 def _extract_video_id(url: Optional[str]) -> Optional[str]:
-    """Extract 11-char YouTube video ID from any YouTube URL format."""
     if not url:
         return None
     for pattern in _YT_PATTERNS:
-        m = re.search(pattern, url)
-        if m:
-            return m.group(1)
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  OMDB fetch
-# ─────────────────────────────────────────────────────────────────────────────
-async def _fetch_omdb(title: str, year: Optional[str] = None) -> dict:
-    """
-    Fetch movie data from OMDB by title.
-    Returns the raw OMDB response dict.
-    """
+def _normalize_lookup_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _tmdb_match_score(item: dict[str, Any], clean_title: str, year: Optional[str]) -> float:
+    candidate_title = str(item.get("title") or item.get("original_title") or "")
+    normalized_title = _normalize_lookup_text(clean_title)
+    normalized_candidate = _normalize_lookup_text(candidate_title)
+
+    score = 0.0
+    if normalized_title and normalized_title == normalized_candidate:
+        score += 4.0
+    elif normalized_title and normalized_title in normalized_candidate:
+        score += 2.0
+    elif normalized_title and normalized_candidate in normalized_title:
+        score += 1.5
+
+    release_year = str(item.get("release_date") or "")[:4]
+    if year and release_year == year:
+        score += 2.5
+    elif not year and release_year:
+        score += 0.3
+
+    try:
+        score += min(float(item.get("popularity") or 0) / 1000.0, 0.5)
+    except Exception:
+        pass
+
+    return score
+
+
+def _pick_tmdb_video_key(results: list[dict[str, Any]]) -> Optional[str]:
+    youtube_results = [
+        item
+        for item in results
+        if str(item.get("site") or "").strip().lower() == "youtube"
+        and str(item.get("key") or "").strip()
+    ]
+    if not youtube_results:
+        return None
+
+    def score(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        type_value = str(item.get("type") or "").strip().lower()
+        return (
+            1 if bool(item.get("official")) else 0,
+            2 if type_value == "trailer" else 1 if type_value == "teaser" else 0,
+            int(item.get("size") or 0),
+            str(item.get("published_at") or ""),
+        )
+
+    best = max(youtube_results, key=score)
+    key = str(best.get("key") or "").strip()
+    return key or None
+
+
+async def _fetch_tmdb_video_id(clean_title: str, year: Optional[str] = None) -> Optional[str]:
+    if not TMDB_API_KEY:
+        return None
+
+    search_params = {
+        "api_key": TMDB_API_KEY,
+        "query": clean_title,
+        "include_adult": "false",
+        "language": "en-US",
+    }
+    if year:
+        search_params["year"] = year
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            search_response = await client.get(TMDB_SEARCH_URL, params=search_params)
+            search_response.raise_for_status()
+            search_data = search_response.json()
+            results = list(search_data.get("results") or [])
+
+            if not results and year:
+                fallback_params = dict(search_params)
+                fallback_params.pop("year", None)
+                search_response = await client.get(TMDB_SEARCH_URL, params=fallback_params)
+                search_response.raise_for_status()
+                search_data = search_response.json()
+                results = list(search_data.get("results") or [])
+
+            if not results:
+                return None
+
+            best_match = max(
+                results[:8],
+                key=lambda item: _tmdb_match_score(item, clean_title, year),
+            )
+            tmdb_movie_id = int(best_match.get("id") or 0)
+            if not tmdb_movie_id:
+                return None
+
+            videos_response = await client.get(
+                TMDB_VIDEOS_URL_TEMPLATE.format(movie_id=tmdb_movie_id),
+                params={"api_key": TMDB_API_KEY, "language": "en-US"},
+            )
+            videos_response.raise_for_status()
+            videos_data = videos_response.json()
+    except Exception as exc:
+        log.warning("TMDB trailer lookup failed for title='%s': %s", clean_title, exc)
+        return None
+
+    return _pick_tmdb_video_key(list(videos_data.get("results") or []))
+
+
+async def _fetch_omdb(title: str, year: Optional[str] = None) -> dict[str, Any]:
     params = {
         "apikey": OMDB_API_KEY,
-        "t":      title,
-        "plot":   "short",
-        "type":   "movie",
+        "t": title,
+        "plot": "short",
+        "type": "movie",
     }
     if year:
         params["y"] = year
@@ -134,196 +196,152 @@ async def _fetch_omdb(title: str, year: Optional[str] = None) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(OMDB_BASE, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            response = await client.get(OMDB_BASE, params=params)
+            response.raise_for_status()
+            data = response.json()
     except Exception as exc:
         log.warning("OMDB request failed for title='%s': %s", title, exc)
         return {}
 
     if data.get("Response") == "False":
-        log.warning(f"OMDB not found for title='{title}': {data.get('Error')}")
         return {}
-
     return data
 
 
-async def _fetch_omdb_by_imdb(imdb_id: str) -> dict:
-    """Fetch OMDB data by IMDb ID (more reliable when you have it)."""
+async def _fetch_omdb_by_imdb(imdb_id: str) -> dict[str, Any]:
     params = {
         "apikey": OMDB_API_KEY,
-        "i":      imdb_id,
-        "plot":   "short",
+        "i": imdb_id,
+        "plot": "short",
     }
     if not OMDB_API_KEY:
         log.info("OMDB API key is missing; using trailer fallback for IMDb id '%s'", imdb_id)
         return {}
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(OMDB_BASE, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            response = await client.get(OMDB_BASE, params=params)
+            response.raise_for_status()
+            data = response.json()
     except Exception as exc:
         log.warning("OMDB request failed for imdb_id='%s': %s", imdb_id, exc)
         return {}
-
     if data.get("Response") == "False":
         return {}
     return data
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Response model
-# ─────────────────────────────────────────────────────────────────────────────
 class TrailerResponse(BaseModel):
-    movie_id:  int
-    title:     str
-    year:      Optional[str]
-    video_id:  Optional[str]          # None if no trailer found
-    embed_url: Optional[str]          # Full iframe src URL
-    found:     bool
+    movie_id: int
+    title: str
+    year: Optional[str]
+    video_id: Optional[str]
+    embed_url: Optional[str]
+    found: bool
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Main endpoint
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/trailer/{movie_id}", response_model=TrailerResponse)
 async def get_trailer(movie_id: int):
-    """
-    Returns YouTube trailer info for a given MovieLens movie_id.
+    _ensure_trailer_indexes()
 
-    Frontend usage:
-        const res = await fetch(`/api/trailer/${movieId}`)
-        const { embed_url, title, found } = await res.json()
-        // embed_url → use as iframe src
-    """
-
-    # ── 1. Cache check ───────────────────────────────────────────────────────
-    with _get_conn() as conn:
-        cached = conn.execute(
-            "SELECT * FROM trailer_cache WHERE movie_id = ?", (movie_id,)
-        ).fetchone()
-
-    if cached:
-        video_id = cached["video_id"]
+    cached = _trailer_cache().find_one(
+        {"movie_id": int(movie_id)},
+        {"_id": 0, "title": 1, "year": 1, "video_id": 1},
+    )
+    cached_video_id = str(cached.get("video_id") or "").strip() or None if cached else None
+    if cached and cached_video_id:
         return TrailerResponse(
-            movie_id  = movie_id,
-            title     = cached["title"] or "",
-            year      = cached["year"],
-            video_id  = video_id,
-            embed_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1&rel=0&modestbranding=1"
-                        if video_id else None,
-            found     = bool(video_id),
+            movie_id=movie_id,
+            title=str(cached.get("title") or "").strip(),
+            year=str(cached.get("year") or "").strip() or None,
+            video_id=cached_video_id,
+            embed_url=(
+                f"https://www.youtube.com/embed/{cached_video_id}?autoplay=1&rel=0&modestbranding=1"
+                if cached_video_id
+                else None
+            ),
+            found=True,
         )
 
-    # ── 2. Look up movie title + imdb_id from our movies table ───────────────
     movie_row = _get_movie_lookup(movie_id)
-
     if not movie_row:
         raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found in DB")
 
-    raw_title = str(movie_row["title"] or "")
-    imdb_id = str(movie_row["imdb_id"]).strip() if movie_row.get("imdb_id") else None
+    raw_title = str(movie_row.get("title") or "")
+    imdb_id = str(movie_row.get("imdb_id") or "").strip() or None
 
-    # Strip year from MovieLens title format: "Toy Story (1995)" → "Toy Story", "1995"
     year_match = re.search(r"\((\d{4})\)\s*$", raw_title)
     clean_title = re.sub(r"\s*\(\d{4}\)\s*$", "", raw_title).strip()
-    year        = year_match.group(1) if year_match else None
+    year = year_match.group(1) if year_match else None
 
-    # ── 3. Fetch from OMDB ───────────────────────────────────────────────────
-    if imdb_id:
-        omdb_data = await _fetch_omdb_by_imdb(imdb_id)
-    else:
-        omdb_data = await _fetch_omdb(clean_title, year)
-
-    # OMDB returns a "Website" field that sometimes contains a YouTube URL
-    # It can also return a "Trailer" field in some extended responses
-    trailer_url = (
-        omdb_data.get("Trailer")  or   # extended OMDB trailer field
-        omdb_data.get("Website")  or   # sometimes a YouTube link
-        None
-    )
-
-    video_id = _extract_video_id(trailer_url)
-
-    # ── 4. Fallback: construct YouTube search embed URL ───────────────────────
-    # If OMDB doesn't return a direct YouTube URL,
-    # use YouTube's search embed — no API key required.
-    # Format: https://www.youtube.com/results?search_query=...
-    # For iframe we use the search trick via youtube-nocookie embed
+    video_id = await _fetch_tmdb_video_id(clean_title, year)
     if not video_id:
-        # We'll return a search-based embed so the player still shows something
-        search_query = f"{clean_title} {year or ''} official trailer".strip()
-        # NOTE: YouTube doesn't allow direct search iframes — so we return
-        # video_id=None and embed_url as a YouTube search URL.
-        # The frontend will handle this by opening YouTube search in a new tab
-        # as a graceful fallback. See TrailerPlayer.tsx comments.
-        embed_url = None
-        fallback_search_url = (
-            f"https://www.youtube.com/results?search_query="
-            f"{search_query.replace(' ', '+')}"
+        omdb_data = await (
+            _fetch_omdb_by_imdb(imdb_id) if imdb_id else _fetch_omdb(clean_title, year)
         )
-        log.info(f"No trailer URL from OMDB for '{clean_title}' — fallback search ready")
-    else:
+        trailer_url = omdb_data.get("Trailer") or omdb_data.get("Website") or None
+        video_id = _extract_video_id(trailer_url)
+
+    if video_id:
         embed_url = (
             f"https://www.youtube.com/embed/{video_id}"
             f"?autoplay=1&rel=0&modestbranding=1&color=white"
         )
-        fallback_search_url = None
-        log.info(f"Trailer found for '{clean_title}': {video_id}")
+    else:
+        embed_url = None
+        log.info("No direct trailer URL from OMDB for '%s'", clean_title)
 
-    # ── 5. Cache result ───────────────────────────────────────────────────────
-    with _get_conn() as conn:
-        conn.execute("""
-            INSERT INTO trailer_cache
-                (movie_id, imdb_id, title, year, video_id)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(movie_id) DO UPDATE SET
-                imdb_id = excluded.imdb_id,
-                title = excluded.title,
-                year = excluded.year,
-                video_id = excluded.video_id,
-                fetched_at = CURRENT_TIMESTAMP
-        """, (movie_id, imdb_id, clean_title, year, video_id))
+    _trailer_cache().update_one(
+        {"movie_id": int(movie_id)},
+        {
+            "$set": {
+                "movie_id": int(movie_id),
+                "imdb_id": imdb_id,
+                "title": clean_title,
+                "year": year,
+                "video_id": video_id,
+                "provider": "tmdb" if video_id else "fallback",
+                "fetched_at": datetime.utcnow().isoformat(),
+            }
+        },
+        upsert=True,
+    )
 
     return TrailerResponse(
-        movie_id  = movie_id,
-        title     = clean_title,
-        year      = year,
-        video_id  = video_id,
-        embed_url = embed_url,
-        found     = bool(video_id),
+        movie_id=movie_id,
+        title=clean_title,
+        year=year,
+        video_id=video_id,
+        embed_url=embed_url,
+        found=bool(video_id),
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Bulk pre-warm endpoint (optional — call once to pre-cache popular movies)
-# ─────────────────────────────────────────────────────────────────────────────
 @router.post("/trailer/prewarm")
 async def prewarm_trailers(limit: int = 100):
-    """
-    Pre-fetch trailers for the top-N most popular movies.
-    Call this once after deployment to warm the cache.
-    Usage: POST /api/trailer/prewarm?limit=500
-    """
-    with _get_conn() as conn:
-        # Get top movies by rating count (already computed during training)
-        rows = conn.execute("""
-            SELECT m.movieId, m.title
-            FROM movies m
-            LEFT JOIN trailer_cache tc ON m.movieId = tc.movie_id
-            WHERE tc.movie_id IS NULL
-            ORDER BY m.num_ratings DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+    _ensure_trailer_indexes()
+    rows = list(
+        _movies().find(
+            {},
+            {"_id": 0, "movieId": 1, "title": 1},
+        ).sort(
+            [("num_ratings", DESCENDING), ("avg_rating", DESCENDING), ("title", 1)]
+        ).limit(max(1, int(limit)))
+    )
 
     results = {"cached": 0, "failed": 0, "total": len(rows)}
     for row in rows:
-        try:
-            await get_trailer(row["movieId"])
+        movie_id = int(row.get("movieId") or 0)
+        if _trailer_cache().count_documents({"movie_id": movie_id}, limit=1):
             results["cached"] += 1
-        except Exception as e:
-            log.warning(f"Prewarm failed for movie {row['movieId']}: {e}")
+            continue
+        try:
+            await get_trailer(movie_id)
+            results["cached"] += 1
+        except Exception as exc:
+            log.warning("Prewarm failed for movie %s: %s", movie_id, exc)
             results["failed"] += 1
 
     return results
+
+
+_ensure_trailer_indexes()

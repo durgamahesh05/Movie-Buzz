@@ -80,6 +80,8 @@ export type Movie = {
   source?: string;
   source_label?: string;
   can_delete?: boolean;
+  user_feedback?: string | null;
+  user_rating?: number | null;
 };
 
 export type AdminOverview = {
@@ -389,6 +391,15 @@ export async function getHomeMovies(limit = 50, genre?: string, userEmail?: stri
   return data.results ?? [];
 }
 
+export function getMovieDetails(movieId: number, userEmail?: string) {
+  const params = new URLSearchParams();
+  if (userEmail?.trim()) {
+    params.set("user_email", userEmail.trim().toLowerCase());
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<Movie>(`/movies/${movieId}/details${suffix}`);
+}
+
 export function searchCatalogMovies(query: string, limit = 50) {
   return request<Movie[]>(
     `/search?q=${encodeURIComponent(query)}&limit=${limit}`,
@@ -563,6 +574,17 @@ export function uploadAdminMoviesCsv(file: File) {
 export function deleteAdminMovie(movieId: number) {
   return request<MessageResponse>(`/admin/movies/${movieId}`, {
     method: "DELETE",
+  });
+}
+
+export function rateMovie(userId: string, movieId: number, rating: number) {
+  return request<{ status: string; rating: number }>("/feedback/rating", {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: userId.trim().toLowerCase(),
+      movie_id: movieId,
+      rating,
+    }),
   });
 }
 

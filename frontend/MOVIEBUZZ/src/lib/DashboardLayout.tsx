@@ -8,5 +8,10 @@ export default function DashboardLayout() {
     return <Navigate to="/login" replace />;
   }
 
+  // Prevent admins from accessing user dashboard
+  if (user.role === "admin") {
+    return <Navigate to="/admin" replace />;
+  }
+
   return <Outlet />;
 }

@@ -66,7 +66,7 @@ export function StatsCards({ refreshToken = 0 }: StatsCardsProps) {
     {
       title: "Total Users",
       value: overview.total_users.toLocaleString(),
-      subtitle: "Registered SQLite users",
+      subtitle: "Registered user accounts",
       icon: Users,
       color: "text-blue-600 dark:text-blue-400",
       bgColor: "bg-blue-50 dark:bg-blue-500/15",

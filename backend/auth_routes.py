@@ -1,5 +1,5 @@
 """
-auth/auth_routes.py  –  MovieBuzz Authentication (SQLite)
+auth/auth_routes.py  –  MovieBuzz Authentication (MongoDB)
 """
 
 import json
@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 
 from config import env
 from email_service import (
+    has_email_configuration,
     send_account_created_email,
     send_account_deleted_email,
     send_account_deletion_otp_email,
@@ -30,6 +31,7 @@ from user_model import (
     clear_otp,
     delete_user,
     find_one,
+    find_one_by_login_identifier,
     get_all_users,
     get_preferences,
     get_wishlist,
@@ -129,9 +131,13 @@ def _is_local_request(request: Request) -> bool:
 
 
 def _allow_local_auth_fallback(request: Request) -> bool:
-    return _is_local_request(request) and _env_flag(
-        "MOVIEBUZZ_ALLOW_LOCAL_AUTH_FALLBACK",
-        default="1",
+    return (
+        _is_local_request(request)
+        and not has_email_configuration()
+        and _env_flag(
+            "MOVIEBUZZ_ALLOW_LOCAL_AUTH_FALLBACK",
+            default="1",
+        )
     )
 
 
@@ -435,13 +441,13 @@ async def resend_otp(request: Request):
 @auth_router.post("/login")
 async def login(request: Request):
     data     = await request.json()
-    email    = _normalise_email(data.get("email", ""))
+    login_identifier = _normalise_email(data.get("email", ""))
     password = data.get("password", "")
 
-    user = find_one(email)
+    user = find_one_by_login_identifier(login_identifier)
     if not user and _allow_local_auth_fallback(request):
         ensure_system_admins()
-        user = find_one(email)
+        user = find_one_by_login_identifier(login_identifier)
     if not user:
         return {"success": False, "msg": "User not found"}
     if not user.get("verified"):
@@ -449,13 +455,14 @@ async def login(request: Request):
     if not bcrypt.checkpw(password.encode(), user["password"].encode()):
         return {"success": False, "msg": "Incorrect password"}
 
-    preferences = get_preferences(email)
+    resolved_email = _normalise_email(user.get("email", ""))
+    preferences = get_preferences(resolved_email)
 
     return {
         "success": True,
         "msg":     "Login successful",
         "name":    user["name"],
-        "email":   user["email"],
+        "email":   resolved_email,
         "role":    user.get("role", "user"),
         "age":     preferences.get("age"),
         "preferred_genres": preferences.get("preferred_genres", []),
@@ -723,4 +730,4 @@ async def admin_update_role(email: str, request: Request):
 
 @auth_router.get("/test")
 def test():
-    return {"status": "auth working", "db": "SQLite", "smtp": "configured"}
+    return {"status": "auth working", "db": "MongoDB", "smtp": "configured"}

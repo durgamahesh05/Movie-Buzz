@@ -83,10 +83,13 @@ export function PreferencesSetupPage() {
   useEffect(() => {
     if (!user) {
       window.open("/login", "_self");
+    } else if (user.role === "admin") {
+      // Admins should not access user preferences
+      window.open("/admin", "_self");
     }
   }, [user]);
 
-  if (!user) return null;
+  if (!user || user.role === "admin") return null;
 
   return (
     <div className="relative" style={pageStyles.shell}>

@@ -5,6 +5,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
+ROOT_ENV_FILE = BASE_DIR.parent / ".env"
 
 
 def load_env_file(env_file: Path = ENV_FILE) -> None:
@@ -27,8 +28,9 @@ def load_env_file(env_file: Path = ENV_FILE) -> None:
 
         os.environ[key] = value
 
-
-load_env_file()
+# Load backend-local settings first, then fill any missing values from the repo root.
+load_env_file(ENV_FILE)
+load_env_file(ROOT_ENV_FILE)
 
 
 def env(*names: str, default: str = "") -> str:

@@ -2,48 +2,113 @@ services:
   - type: web
     name: moviebuzz-backend
     runtime: python
+    pythonVersion: "3.10.13"
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    buildCommand: |
+      pip install --upgrade pip setuptools && \
+      pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app:app --timeout 120 --access-logfile - --error-logfile -
     healthCheckPath: /health
+    healthCheckInterval: 300
+
+    # Scale configuration
+    plan: standard
+    numInstances: 1
+    maxNumInstances: 3
+
     envVars:
-      - key: DATABASE_URL
+      # Database - MongoDB only
+      - key: DB_TYPE
+        value: mongodb
+
+      - key: MONGODB_URI
         sync: false
-      - key: SUPABASE_PROJECT_REF
-        value: helgktwlzbrjjnrpqyoz
-      - key: SUPABASE_DB_PASSWORD
-        sync: false
-      - key: SUPABASE_DB_HOST
-        value: db.helgktwlzbrjjnrpqyoz.supabase.co
-      - key: SUPABASE_DB_PORT
-        value: "5432"
-      - key: SUPABASE_DB_USER
-        value: postgres
-      - key: SUPABASE_DB_NAME
-        value: postgres
-      - key: SUPABASE_DB_SSLMODE
-        value: require
-      - key: MOVIEBUZZ_SKIP_STARTUP
-        value: "0"
-      - key: MOVIEBUZZ_WARM_ENGINE
-        value: "0"
+
+      # Legacy database env vars such as DB_PATH, MOVIEBUZZ_DB_PATH,
+      # and DATABASE_URL are no longer used by the backend.
+
+      - key: DATABASE_NAME
+        value: moviebuzz
+
+      - key: MONGO_CONNECT_TIMEOUT_MS
+        value: "30000"
+
+      - key: MONGO_SOCKET_TIMEOUT_MS
+        value: "60000"
+
+      - key: MONGO_SERVER_SELECTION_TIMEOUT_MS
+        value: "30000"
+
+      # Frontend URL
+      - key: FRONTEND_URL
+        value: https://movie-buzz-n1hy.vercel.app
+
+      # API Keys
+      - key: SECRET_KEY
+        generateValue: true
+
       - key: OMDB_API_KEY
         sync: false
+
       - key: TMDB_API_KEY
         sync: false
+
+      # Email Configuration
       - key: SMTP_HOST
-        sync: false
+        value: smtp.zoho.in
+
       - key: SMTP_PORT
-        sync: false
+        value: "587"
+
       - key: SMTP_SSL_PORT
-        sync: false
+        value: "465"
+
+      - key: SMTP_TIMEOUT
+        value: "15"
+
       - key: SMTP_USER
-        sync: false
+        value: moviebuzzspm@zohomail.in
+
       - key: SMTP_PASSWORD
         sync: false
+
       - key: SMTP_FROM
-        sync: false
+        value: moviebuzzspm@zohomail.in
+
       - key: SUPPORT_EMAIL
-        sync: false
+        value: moviebuzzspm@zohomail.in
+
+      # Admin Accounts (JSON format)
       - key: MOVIEBUZZ_SYSTEM_ADMIN_ACCOUNTS_JSON
         sync: false
+
+      # Feature Flags
+      - key: MOVIEBUZZ_SKIP_STARTUP
+        value: "0"
+
+      - key: MOVIEBUZZ_AUTO_LOAD_DATA
+        value: "0"
+
+      - key: MOVIEBUZZ_WARM_ENGINE
+        value: "0"
+
+      - key: MOVIEBUZZ_IMPORT_MAX_MOVIES
+        value: "7000"
+
+      - key: MOVIEBUZZ_IMPORT_MAX_RATINGS
+        value: "500000"
+
+      - key: MOVIEBUZZ_IMPORT_PERSIST_TAGS
+        value: "0"
+
+      - key: MOVIEBUZZ_IMPORT_INCLUDE_GENOME
+        value: "0"
+
+      - key: MOVIEBUZZ_IMPORT_PERSIST_RATING_TIMESTAMPS
+        value: "0"
+
+      - key: MOVIEBUZZ_ENV
+        value: production
+
+      - key: RENDER
+        value: "true"

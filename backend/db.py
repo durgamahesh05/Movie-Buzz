@@ -1,268 +1,247 @@
 from __future__ import annotations
 
-import re
-import sqlite3
-from collections.abc import Iterable, Iterator, Mapping
-from pathlib import Path
-from typing import Any
-from urllib.parse import quote, urlsplit
+import logging
+from time import monotonic
+from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 import pandas as pd
+from pymongo import ASCENDING, DESCENDING, TEXT, MongoClient
+from pymongo.collection import Collection
+from pymongo.database import Database
+from pymongo.errors import OperationFailure
+from pymongo.server_api import ServerApi
 
-from config import env
+from config import env, env_int
 
-DEFAULT_SQLITE_PATH = Path(__file__).resolve().parent / "moviebuzz.db"
+try:
+    import certifi
+except ImportError:  # pragma: no cover - optional dependency
+    certifi = None
 
+log = logging.getLogger(__name__)
 
-def _supabase_database_url_from_env() -> str:
-    project_ref = env("SUPABASE_PROJECT_REF", default="").strip()
-    host = env(
-        "SUPABASE_DB_HOST",
-        default=(f"db.{project_ref}.supabase.co" if project_ref else ""),
-    ).strip()
-    password = env("SUPABASE_DB_PASSWORD", default="").strip()
-    if not host or not password:
-        return ""
-
-    user = env("SUPABASE_DB_USER", default="postgres").strip() or "postgres"
-    db_name = env("SUPABASE_DB_NAME", default="postgres").strip() or "postgres"
-    port = env("SUPABASE_DB_PORT", default="5432").strip() or "5432"
-    sslmode = env("SUPABASE_DB_SSLMODE", default="require").strip() or "require"
-    return (
-        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
-        f"@{host}:{port}/{quote(db_name, safe='')}?sslmode={quote(sslmode, safe='')}"
-    )
-
-
-def _normalize_database_target(raw_value: str) -> tuple[str, str | Path]:
-    value = (raw_value or "").strip()
-    if not value:
-        supabase_url = _supabase_database_url_from_env()
-        if supabase_url:
-            return "postgres", supabase_url
-        return "sqlite", DEFAULT_SQLITE_PATH
-
-    if value.startswith("postgres://"):
-        return "postgres", "postgresql://" + value[len("postgres://") :]
-    if value.startswith("postgresql://"):
-        return "postgres", value
-    if value.startswith("sqlite:///"):
-        return "sqlite", Path(value[len("sqlite:///") :]).expanduser()
-
-    return "sqlite", Path(value).expanduser()
-
-
-_backend, _target = _normalize_database_target(
+DB_BACKEND = "mongodb"
+DB_NAME = (
     env(
-        "DATABASE_URL",
-        "DB_PATH",
-        "MOVIEBUZZ_DB_PATH",
-        default="",
-    )
+        "DATABASE_NAME",
+        "MONGODB_DATABASE",
+        "MONGO_DB_NAME",
+        default="moviebuzz",
+    ).strip()
+    or "moviebuzz"
 )
-
-DB_BACKEND = _backend
-DB_TARGET = _target
-
-
-def is_postgres() -> bool:
-    return DB_BACKEND == "postgres"
-
-
-def is_sqlite() -> bool:
-    return DB_BACKEND == "sqlite"
+DB_URI = (
+    env(
+        "MONGODB_URI",
+        "MONGO_URI",
+        default="mongodb://localhost:27017",
+    ).strip()
+    or "mongodb://localhost:27017"
+)
+SERVER_SELECTION_TIMEOUT_MS = env_int(
+    "MONGODB_SERVER_SELECTION_TIMEOUT_MS",
+    "MONGO_SERVER_SELECTION_TIMEOUT_MS",
+    "MOVIEBUZZ_MONGO_SERVER_SELECTION_TIMEOUT_MS",
+    default=3_000,
+)
+CONNECT_TIMEOUT_MS = env_int(
+    "MONGODB_CONNECT_TIMEOUT_MS",
+    "MONGO_CONNECT_TIMEOUT_MS",
+    "MOVIEBUZZ_MONGO_CONNECT_TIMEOUT_MS",
+    default=3_000,
+)
+SOCKET_TIMEOUT_MS = env_int(
+    "MONGODB_SOCKET_TIMEOUT_MS",
+    "MONGO_SOCKET_TIMEOUT_MS",
+    "MOVIEBUZZ_MONGO_SOCKET_TIMEOUT_MS",
+    default=5_000,
+)
+FAILURE_COOLDOWN_SECONDS = env_int(
+    "MONGODB_FAILURE_COOLDOWN_SECONDS",
+    "MOVIEBUZZ_MONGO_FAILURE_COOLDOWN_SECONDS",
+    default=5,
+)
+def is_mongodb() -> bool:
+    return True
 
 
 def format_db_target() -> str:
-    if is_sqlite():
-        return str(DB_TARGET)
+    try:
+        parsed = urlsplit(DB_URI)
+    except Exception:
+        return f"mongodb://***@unknown/{DB_NAME}"
 
-    parsed = urlsplit(str(DB_TARGET))
+    scheme = parsed.scheme or "mongodb"
     host = parsed.hostname or "localhost"
-    port = parsed.port or 5432
-    path = parsed.path.lstrip("/") or "postgres"
-    return f"postgresql://{host}:{port}/{path}"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{scheme}://{host}{port}/{DB_NAME}"
 
 
-class CompatRow(Mapping[str, Any]):
-    def __init__(self, columns: Iterable[str], values: Iterable[Any]):
-        self._columns = tuple(columns)
-        self._values = tuple(values)
-        self._mapping = dict(zip(self._columns, self._values))
-
-    def __getitem__(self, key: str | int) -> Any:
-        if isinstance(key, int):
-            return self._values[key]
-        return self._mapping[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._columns)
-
-    def __len__(self) -> int:
-        return len(self._columns)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._mapping.get(key, default)
-
-    def keys(self) -> tuple[str, ...]:
-        return self._columns
-
-    def as_dict(self) -> dict[str, Any]:
-        return dict(self._mapping)
+MongoDocument = dict[str, Any]
 
 
-class EmptyCursor:
-    columns: tuple[str, ...] = ()
+class MongoDBService:
+    def __init__(self, uri: str, db_name: str):
+        self.uri = uri
+        self.db_name = db_name
+        self._client: MongoClient[MongoDocument] | None = None
+        self._db: Database[MongoDocument] | None = None
+        self._indexes_ready = False
+        self._unavailable_until = 0.0
+        self._last_error = ""
 
-    def fetchone(self) -> None:
-        return None
+    def _client_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "serverSelectionTimeoutMS": SERVER_SELECTION_TIMEOUT_MS,
+            "connectTimeoutMS": CONNECT_TIMEOUT_MS,
+            "socketTimeoutMS": SOCKET_TIMEOUT_MS,
+            "server_api": ServerApi("1"),
+        }
+        if self.uri.startswith("mongodb+srv://") and certifi is not None:
+            kwargs["tlsCAFile"] = certifi.where()
+        return kwargs
 
-    def fetchall(self) -> list[Any]:
-        return []
-
-    def __iter__(self) -> Iterator[Any]:
-        return iter(())
-
-
-class CompatCursor:
-    def __init__(self, cursor: Any):
-        self._cursor = cursor
-        description = getattr(cursor, "description", None) or ()
-        self.columns = tuple(col[0] for col in description)
-
-    def _wrap(self, row: Any) -> CompatRow | None:
-        if row is None:
-            return None
-        if isinstance(row, CompatRow):
-            return row
-        if isinstance(row, sqlite3.Row):
-            return CompatRow(row.keys(), tuple(row))
-        if isinstance(row, Mapping):
-            return CompatRow(row.keys(), [row[key] for key in row.keys()])
-        return CompatRow(self.columns, tuple(row))
-
-    def fetchone(self) -> CompatRow | None:
-        return self._wrap(self._cursor.fetchone())
-
-    def fetchall(self) -> list[CompatRow]:
-        return [row for row in (self._wrap(item) for item in self._cursor.fetchall()) if row is not None]
-
-    def __iter__(self) -> Iterator[CompatRow]:
-        for item in self._cursor:
-            wrapped = self._wrap(item)
-            if wrapped is not None:
-                yield wrapped
-
-
-_NAMED_PARAM_RE = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def _translate_query(query: str, params: Any) -> str:
-    if is_sqlite():
-        return query
-    if isinstance(params, Mapping):
-        return _NAMED_PARAM_RE.sub(r"%(\1)s", query)
-    return query.replace("?", "%s")
-
-
-class DatabaseConnection:
-    def __init__(self) -> None:
-        if is_sqlite():
-            db_path = Path(str(DB_TARGET))
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-        else:
+    def connect(self) -> Database[MongoDocument]:
+        if self._unavailable_until > monotonic():
+            raise RuntimeError(self._last_error or "MongoDB is temporarily unavailable")
+        if self._db is None:
+            self._client = MongoClient(self.uri, **self._client_kwargs())
+            self._db = self._client[self.db_name]
             try:
-                import psycopg
-            except ImportError as exc:
-                raise RuntimeError(
-                    "PostgreSQL support requires psycopg. Install backend requirements first."
-                ) from exc
-            self._conn = psycopg.connect(str(DB_TARGET))
+                self._client.admin.command("ping")
+                self._last_error = ""
+                self._unavailable_until = 0.0
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._unavailable_until = monotonic() + max(1, FAILURE_COOLDOWN_SECONDS)
+                self.close()
+                raise
+        return self._db
 
-    def execute(self, query: str, params: Any = None) -> CompatCursor | EmptyCursor:
-        sql = _translate_query(query, params)
-        if is_sqlite():
-            if params is None:
-                cursor = self._conn.execute(query)
-            else:
-                cursor = self._conn.execute(query, params)
-            return CompatCursor(cursor)
+    @property
+    def db(self) -> Database[MongoDocument]:
+        return self.connect()
 
-        cursor = self._conn.cursor()
-        if params is None:
-            cursor.execute(sql)
-        else:
-            cursor.execute(sql, params)
-        return CompatCursor(cursor)
+    def collection(self, name: str) -> Collection[MongoDocument]:
+        return self.db[name]
 
-    def executemany(self, query: str, rows: Iterable[Any]) -> None:
-        rows = list(rows)
-        if not rows:
-            return
-
-        if is_sqlite():
-            self._conn.executemany(query, rows)
-            return
-
-        sql = _translate_query(query, rows[0])
-        cursor = self._conn.cursor()
-        cursor.executemany(sql, rows)
-
-    def executescript(self, script: str) -> None:
-        if is_sqlite():
-            self._conn.executescript(script)
-            return
-
-        statements = [stmt.strip() for stmt in script.split(";") if stmt.strip()]
-        for statement in statements:
-            self.execute(statement)
-
-    def commit(self) -> None:
-        self._conn.commit()
-
-    def rollback(self) -> None:
-        self._conn.rollback()
+    def _safe_create_index(
+        self,
+        collection_name: str,
+        keys: list[tuple[str, Any]],
+        **kwargs: Any,
+    ) -> None:
+        try:
+            self.collection(collection_name).create_index(keys, **kwargs)
+        except OperationFailure as exc:
+            log.warning(
+                "MongoDB index creation skipped for %s %s: %s",
+                collection_name,
+                keys,
+                exc,
+            )
 
     def close(self) -> None:
-        self._conn.close()
+        if self._client is not None:
+            self._client.close()
+        self._client = None
+        self._db = None
+        self._indexes_ready = False
 
-    def __enter__(self) -> "DatabaseConnection":
-        return self
+    def ensure_indexes(self) -> None:
+        if self._indexes_ready:
+            return
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if exc_type is None:
-            self.commit()
-        else:
-            self.rollback()
-        self.close()
+        self._safe_create_index("movies", [("movieId", ASCENDING)], unique=True)
+        self._safe_create_index("movies", [("source", ASCENDING), ("movieId", DESCENDING)])
+        self._safe_create_index("movies", [("num_ratings", DESCENDING), ("avg_rating", DESCENDING)])
+        self._safe_create_index("movies", [("title", TEXT), ("genres", TEXT)])
+
+        self._safe_create_index("ratings", [("movieId", ASCENDING), ("userId", ASCENDING)])
+        self._safe_create_index("ratings", [("userId", ASCENDING), ("movieId", ASCENDING)])
+        self._safe_create_index("tags", [("movieId", ASCENDING)])
+        self._safe_create_index("genome_scores", [("movieId", ASCENDING), ("tagId", ASCENDING)])
+        self._safe_create_index("genome_scores", [("movieId", ASCENDING)])
+        self._safe_create_index("rating_timestamps", [("movieId", ASCENDING)], unique=True)
+
+        self._safe_create_index("omdb_cache", [("title", ASCENDING)], unique=True)
+        self._safe_create_index("model_metrics", [("run_id", ASCENDING)], unique=True)
+        self._safe_create_index("model_metrics", [("ts", DESCENDING)])
+        self._safe_create_index("trailer_cache", [("movie_id", ASCENDING)], unique=True)
+
+        self._safe_create_index("users", [("email", ASCENDING)], unique=True)
+        self._safe_create_index("users", [("role", ASCENDING)])
+        self._safe_create_index("users", [("created_at", DESCENDING)])
+
+        self._safe_create_index(
+            "wishlists",
+            [("user_email", ASCENDING), ("movie_key", ASCENDING)],
+            unique=True,
+        )
+        self._safe_create_index("wishlists", [("created_at", DESCENDING)])
+
+        self._safe_create_index("user_interactions", [("user_id", ASCENDING), ("ts", DESCENDING)])
+        self._safe_create_index("user_interactions", [("movieId", ASCENDING), ("ts", DESCENDING)])
+        self._safe_create_index("user_profiles", [("user_id", ASCENDING)], unique=True)
+        self._safe_create_index("recommendation_impressions", [("request_id", ASCENDING)])
+        self._safe_create_index("recommendation_impressions", [("user_id", ASCENDING), ("ts", DESCENDING)])
+        self._safe_create_index(
+            "user_feedback",
+            [("user_id", ASCENDING), ("movieId", ASCENDING)],
+            unique=True,
+        )
+
+        self._indexes_ready = True
 
 
-def get_db() -> DatabaseConnection:
-    return DatabaseConnection()
+_mongo_service: MongoDBService | None = None
 
 
-def get_table_columns(conn: DatabaseConnection, table_name: str) -> set[str]:
-    if is_sqlite():
-        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        return {str(row["name"]) for row in rows}
-
-    rows = conn.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = %s
-        ORDER BY ordinal_position
-        """,
-        (table_name,),
-    ).fetchall()
-    return {str(row["column_name"]) for row in rows}
+def get_db() -> MongoDBService:
+    global _mongo_service
+    if _mongo_service is None:
+        _mongo_service = MongoDBService(DB_URI, DB_NAME)
+    return _mongo_service
 
 
-def read_sql_df(conn: DatabaseConnection, query: str, params: Any = None) -> pd.DataFrame:
-    cursor = conn.execute(query, params)
-    rows = cursor.fetchall()
+def get_collection(name: str) -> Collection[MongoDocument]:
+    return get_db().collection(name)
+
+
+def read_collection_df(
+    name: str,
+    query: MongoDocument | None = None,
+    projection: MongoDocument | None = None,
+    sort: list[tuple[str, int]] | None = None,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    cursor = get_collection(name).find(query or {}, projection or None)
+    if sort:
+        cursor = cursor.sort(sort)
+    if limit is not None:
+        cursor = cursor.limit(int(limit))
+    rows = list(cursor)
     if not rows:
-        return pd.DataFrame(columns=list(cursor.columns))
-    return pd.DataFrame([row.as_dict() for row in rows], columns=list(cursor.columns))
+        requested_columns = [
+            key for key, value in (projection or {}).items() if key != "_id" and value
+        ]
+        return pd.DataFrame(columns=requested_columns)
+    return _documents_to_df(rows)
+
+
+def _documents_to_df(rows: Iterable[MongoDocument]) -> pd.DataFrame:
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        normalized = dict(row)
+        normalized.pop("_id", None)
+        payload.append(normalized)
+    return pd.DataFrame(payload)
+
+
+def get_table_columns(*_: Any, **__: Any) -> set[str]:
+    return set()
+
+
+def read_sql_df(*_: Any, **__: Any) -> pd.DataFrame:
+    raise RuntimeError("SQL access has been removed. Use MongoDB collection helpers instead.")

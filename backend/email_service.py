@@ -5,7 +5,6 @@ Email helpers for MovieBuzz notifications.
 from __future__ import annotations
 
 import logging
-import os
 import smtplib
 from email.message import EmailMessage
 from typing import Iterable
@@ -15,25 +14,92 @@ from config import env, env_int
 log = logging.getLogger("email_service")
 
 DEFAULT_HOSTS = ("smtp.zoho.in", "smtp.zoho.com")
+SERVICE_HOSTS = {
+    "gmail": ("smtp.gmail.com",),
+    "google": ("smtp.gmail.com",),
+    "zoho": DEFAULT_HOSTS,
+    "outlook": ("smtp.office365.com",),
+    "hotmail": ("smtp.office365.com",),
+    "live": ("smtp.office365.com",),
+    "microsoft": ("smtp.office365.com",),
+    "yahoo": ("smtp.mail.yahoo.com",),
+}
 SSL_PORT = env_int("SMTP_SSL_PORT", "MOVIEBUZZ_SMTP_SSL_PORT", default=465)
 TLS_PORT = env_int("SMTP_PORT", "MOVIEBUZZ_SMTP_TLS_PORT", default=587)
 SMTP_TIMEOUT = env_int("SMTP_TIMEOUT", "MOVIEBUZZ_SMTP_TIMEOUT", default=15)
 
-SMTP_USERNAME = env("SMTP_USER", "MOVIEBUZZ_SMTP_EMAIL", default="")
-SMTP_PASSWORD = env("SMTP_PASSWORD", "MOVIEBUZZ_SMTP_PASSWORD", default="")
-SENDER_EMAIL = env("SMTP_FROM", "MOVIEBUZZ_SMTP_EMAIL", default=SMTP_USERNAME)
-SUPPORT_EMAIL = env("SUPPORT_EMAIL", "MOVIEBUZZ_SUPPORT_EMAIL", default=SENDER_EMAIL)
+SMTP_USERNAME = env(
+    "SMTP_USER",
+    "MOVIEBUZZ_SMTP_EMAIL",
+    "EMAIL_USERNAME",
+    default="",
+)
+
+
+def _normalize_secret(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        cleaned = cleaned[1:-1]
+    cleaned = cleaned.replace("\\r", "\r").replace("\\n", "\n")
+    return cleaned.rstrip("\r\n")
+
+
+SMTP_PASSWORD = _normalize_secret(
+    env(
+        "SMTP_PASSWORD",
+        "MOVIEBUZZ_SMTP_PASSWORD",
+        "EMAIL_PASSWORD",
+        default="",
+    )
+)
+SENDER_EMAIL = _normalize_secret(
+    env(
+        "SMTP_FROM",
+        "MOVIEBUZZ_SMTP_EMAIL",
+        "EMAIL_FROM",
+        default=SMTP_USERNAME,
+    )
+)
+SUPPORT_EMAIL = _normalize_secret(
+    env("SUPPORT_EMAIL", "MOVIEBUZZ_SUPPORT_EMAIL", default=SENDER_EMAIL)
+)
+
+
+def has_email_configuration() -> bool:
+    return bool(SMTP_USERNAME.strip() and SMTP_PASSWORD.strip())
 
 
 def _smtp_hosts() -> list[str]:
     hosts: list[str] = []
-    configured = env("SMTP_HOST", "MOVIEBUZZ_SMTP_HOST", default="").strip()
+    configured = env("SMTP_HOST", "MOVIEBUZZ_SMTP_HOST", "EMAIL_HOST", default="").strip()
     if configured:
         hosts.append(configured)
-    for host in DEFAULT_HOSTS:
-        if host not in hosts:
-            hosts.append(host)
-    return hosts
+
+    service = env(
+        "EMAIL_SERVICE",
+        "SMTP_SERVICE",
+        "MOVIEBUZZ_SMTP_SERVICE",
+        default="",
+    ).strip().lower()
+    if not configured and service:
+        mapped_hosts = SERVICE_HOSTS.get(service)
+        if mapped_hosts:
+            hosts.extend(mapped_hosts)
+        elif "." in service:
+            hosts.append(service)
+
+    if not hosts:
+        hosts.extend(DEFAULT_HOSTS)
+
+    deduped_hosts: list[str] = []
+    seen: set[str] = set()
+    for host in hosts:
+        normalized = host.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped_hosts.append(normalized)
+    return deduped_hosts
 
 
 def _send_with_ssl(hosts: Iterable[str], message: EmailMessage) -> bool:

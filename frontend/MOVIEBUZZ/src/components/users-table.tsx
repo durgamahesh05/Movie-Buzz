@@ -101,7 +101,7 @@ export function UsersTable({ limit }: UsersTableProps) {
   );
 
   const handleDelete = async (email: string) => {
-    if (!window.confirm(`Delete ${email} from SQLite?`)) {
+    if (!window.confirm(`Delete ${email} from MovieBuzz?`)) {
       return;
     }
 
@@ -124,7 +124,7 @@ export function UsersTable({ limit }: UsersTableProps) {
     <div className="overflow-hidden rounded-lg border border-zinc-200/60 bg-white text-zinc-900 shadow-sm dark:border-zinc-800/60 dark:bg-zinc-900 dark:text-zinc-100">
       {!limit && (
         <div className="border-b border-zinc-200/60 bg-zinc-50/80 p-4 dark:border-zinc-800/60 dark:bg-zinc-900/60">
-          <h3 className="text-sm text-zinc-500 dark:text-zinc-400">SQLite Users</h3>
+          <h3 className="text-sm text-zinc-500 dark:text-zinc-400">User Accounts</h3>
           <p className="mt-1 text-2xl font-semibold text-zinc-950 dark:text-white">
             {loading ? "..." : users.length}
           </p>
@@ -219,7 +219,7 @@ export function UsersTable({ limit }: UsersTableProps) {
                 colSpan={6}
                 className="py-8 text-center text-zinc-500 dark:text-zinc-400"
               >
-                No users found in SQLite yet.
+                No users found yet.
               </TableCell>
             </TableRow>
           )}

@@ -13,7 +13,7 @@ import { MovieBuzzLogo } from "./moviebuzz-logo";
 export default function LoginPage() {
   const navigate = useNavigate();
   const setUser = useAppStore((state) => state.setUser);
-  const [email, setEmail] = useState("");
+  const [loginIdentifier, setLoginIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -21,17 +21,17 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const fallbackName = normalizedEmail.split("@")[0] || "MovieBuzz User";
+    const normalizedIdentifier = loginIdentifier.trim().toLowerCase();
+    const fallbackName = normalizedIdentifier.split("@")[0] || "MovieBuzz User";
 
     setLoading(true);
 
     try {
-      const data = await loginUser(normalizedEmail, password);
+      const data = await loginUser(normalizedIdentifier, password);
       const role = data.role === "admin" || data.role === "mod" ? "admin" : "user";
       setUser({
         name: data.name || fallbackName,
-        email: data.email || normalizedEmail,
+        email: data.email || normalizedIdentifier,
         role,
         age: data.age ?? null,
         preferredGenres: data.preferred_genres ?? [],
@@ -85,10 +85,11 @@ export default function LoginPage() {
             <div className="space-y-2">
               <Label>Email</Label>
               <Input
-                type="email"
+                type="text"
+                autoComplete="username"
                 placeholder="Enter your email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                value={loginIdentifier}
+                onChange={(e) => setLoginIdentifier(e.target.value)}
                 required
               />
             </div>

@@ -6,6 +6,7 @@ import {
   LogOut,
   Moon,
   Search,
+  Star,
   Sun,
   Trash2,
   UserRound,
@@ -19,7 +20,9 @@ import {
   ApiError,
   confirmDeleteAccount,
   getHomeMovies,
+  getMovieDetails,
   getWishlist,
+  rateMovie,
   recommendCatalogMovies,
   removeWishlistMovie,
   requestDeleteAccountOtp,
@@ -172,6 +175,16 @@ function getMovieDescription(movie: Movie): string {
   return `${title} is a ${genreText.toLowerCase()} title${yearText}. Open the trailer to preview it and save it to your wishlist.`;
 }
 
+function feedbackLabelFromRating(rating: number): string {
+  if (rating >= 4) {
+    return "Saved as liked";
+  }
+  if (rating <= 2) {
+    return "Saved as disliked";
+  }
+  return "Saved as neutral";
+}
+
 function MovieGridSkeleton({
   count = 10,
   theme = "dark",
@@ -249,6 +262,10 @@ export default function Dashboard() {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [wishlist, setWishlist] = useState<Movie[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
+  const [movieDetailsLoading, setMovieDetailsLoading] = useState(false);
+  const [movieDetailsError, setMovieDetailsError] = useState("");
+  const [ratingSaving, setRatingSaving] = useState(false);
+  const [ratingMessage, setRatingMessage] = useState("");
   const [showWishlistOnly, setShowWishlistOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [wishlistLoading, setWishlistLoading] = useState(true);
@@ -526,6 +543,91 @@ export default function Dashboard() {
     showWishlistOnly,
     user.email,
   ]);
+
+  useEffect(() => {
+    if (!selectedMovie?.movie_id) {
+      setMovieDetailsLoading(false);
+      setMovieDetailsError("");
+      setRatingMessage("");
+      return;
+    }
+
+    let isCancelled = false;
+    const selectedMovieKey = selectedMovie.movie_key;
+
+    setMovieDetailsLoading(true);
+    setMovieDetailsError("");
+    setRatingMessage("");
+
+    const loadMovieDetails = async () => {
+      try {
+        const details = enrichMovie(
+          await getMovieDetails(selectedMovie.movie_id as number, user.email.toLowerCase()),
+        );
+        if (isCancelled) {
+          return;
+        }
+        setSelectedMovie((current) => {
+          if (!current || current.movie_key !== selectedMovieKey) {
+            return current;
+          }
+          return { ...current, ...details };
+        });
+      } catch (detailsError) {
+        if (!isCancelled) {
+          setMovieDetailsError(
+            detailsError instanceof ApiError
+              ? detailsError.message
+              : "Unable to load fresh movie details right now",
+          );
+        }
+      } finally {
+        if (!isCancelled) {
+          setMovieDetailsLoading(false);
+        }
+      }
+    };
+
+    void loadMovieDetails();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedMovie?.movie_id, selectedMovie?.movie_key, user.email]);
+
+  const handleMovieRating = async (rating: number) => {
+    if (!selectedMovie?.movie_id || ratingSaving) {
+      return;
+    }
+
+    setRatingSaving(true);
+    setRatingMessage("");
+    setMovieDetailsError("");
+
+    try {
+      await rateMovie(user.email.toLowerCase(), selectedMovie.movie_id, rating);
+      const userFeedback =
+        rating >= 4 ? "like" : rating <= 2 ? "dislike" : "neutral";
+      setSelectedMovie((current) =>
+        current
+          ? {
+              ...current,
+              user_rating: rating,
+              user_feedback: userFeedback,
+            }
+          : current,
+      );
+      setRatingMessage(feedbackLabelFromRating(rating));
+    } catch (ratingError) {
+      setMovieDetailsError(
+        ratingError instanceof ApiError
+          ? ratingError.message
+          : "Unable to save your rating right now",
+      );
+    } finally {
+      setRatingSaving(false);
+    }
+  };
 
   const toggleWishlist = async (movie: Movie) => {
     const email = user.email.toLowerCase();
@@ -1189,6 +1291,28 @@ export default function Dashboard() {
                     </span>
                     <span>Runtime: {selectedMovie.runtime || "N/A"}</span>
                   </p>
+                  {movieDetailsLoading ? (
+                    <p
+                      style={{
+                        marginTop: "10px",
+                        fontSize: "13px",
+                        color: d ? "#93c5fd" : "#1d4ed8",
+                      }}
+                    >
+                      Refreshing movie details and poster cache...
+                    </p>
+                  ) : null}
+                  {movieDetailsError ? (
+                    <p
+                      style={{
+                        marginTop: "10px",
+                        fontSize: "13px",
+                        color: d ? "#fca5a5" : "#b91c1c",
+                      }}
+                    >
+                      {movieDetailsError}
+                    </p>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -1237,6 +1361,112 @@ export default function Dashboard() {
                 >
                   Rating: {selectedMovie.rating ?? "N/A"}
                 </span>
+              </div>
+
+              <div
+                style={{
+                  padding: "16px",
+                  borderRadius: "18px",
+                  backgroundColor: d ? "rgba(245,158,11,0.08)" : "#fff7ed",
+                  border: d
+                    ? "1px solid rgba(245,158,11,0.18)"
+                    : "1px solid rgba(245,158,11,0.2)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <h3 style={{ fontSize: "16px", fontWeight: 800, margin: 0 }}>
+                      Your Rating
+                    </h3>
+                    <p
+                      style={{
+                        margin: "6px 0 0",
+                        color: d ? "#d6d3d1" : "#7c2d12",
+                        fontSize: "13px",
+                      }}
+                    >
+                      {selectedMovie.user_rating
+                        ? `${selectedMovie.user_rating} / 5 stars`
+                        : "Tap a star to save feedback for this movie."}
+                    </p>
+                  </div>
+                  <span
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "999px",
+                      backgroundColor: d ? "rgba(255,255,255,0.08)" : "#ffffff",
+                      color: d ? "#fde68a" : "#9a3412",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {selectedMovie.user_feedback
+                      ? selectedMovie.user_feedback.toUpperCase()
+                      : "NOT RATED"}
+                  </span>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  {Array.from({ length: 5 }, (_, index) => {
+                    const starValue = index + 1;
+                    const isActive = starValue <= (selectedMovie.user_rating ?? 0);
+                    return (
+                      <button
+                        key={`movie-rating-${starValue}`}
+                        type="button"
+                        onClick={() => void handleMovieRating(starValue)}
+                        disabled={!selectedMovie.movie_id || ratingSaving}
+                        aria-label={`Rate this movie ${starValue} star${starValue === 1 ? "" : "s"}`}
+                        style={{
+                          width: "42px",
+                          height: "42px",
+                          borderRadius: "999px",
+                          border: "none",
+                          backgroundColor: isActive
+                            ? d
+                              ? "rgba(251,191,36,0.18)"
+                              : "#fef3c7"
+                            : d
+                              ? "rgba(255,255,255,0.06)"
+                              : "#ffffff",
+                          color: isActive ? "#f59e0b" : d ? "#d4d4d8" : "#6b7280",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: !selectedMovie.movie_id || ratingSaving ? "not-allowed" : "pointer",
+                          opacity: !selectedMovie.movie_id || ratingSaving ? 0.6 : 1,
+                        }}
+                      >
+                        <Star
+                          size={20}
+                          fill={isActive ? "currentColor" : "none"}
+                          strokeWidth={1.9}
+                        />
+                      </button>
+                    );
+                  })}
+                  <span
+                    style={{
+                      fontSize: "13px",
+                      color: d ? "#d6d3d1" : "#7c2d12",
+                    }}
+                  >
+                    {ratingSaving
+                      ? "Saving your rating..."
+                      : ratingMessage || "Your stars are stored as movie feedback."}
+                  </span>
+                </div>
               </div>
 
               <div>

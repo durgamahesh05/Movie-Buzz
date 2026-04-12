@@ -15,9 +15,11 @@ from recommender import (
     recommend_movies,
     browse_mood,
     record_feedback,
+    save_movie_rating,
     add_movies_to_db,
     delete_movie_from_db,
     get_home_movies,
+    get_movie_details,
     list_admin_movies,
     MOOD_GENRE_MAP,
     _clean_title,
@@ -29,10 +31,23 @@ from recommender import (
     get_model_metrics,
     render_model_metrics_plot,
     get_db as get_movie_db,
+    sync_eval_report_to_db,
 )
 from auth_routes import auth_router, ensure_system_admins
 from trailer_router import router as trailer_router
-from user_model import get_db as get_user_db
+from user_model import get_all_wishlist_items, get_user_store_overview
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = str(os.getenv(name, "")).strip().lower()
+    if not raw_value:
+        return default
+    return raw_value in {"1", "true", "yes", "on"}
+
+
+def _auto_load_dataset_on_startup() -> bool:
+    return _env_flag("MOVIEBUZZ_AUTO_LOAD_DATA", default=False)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,16 +55,37 @@ async def lifespan(app: FastAPI):
         yield
         return
     import recommender
-    recommender.log.info("Initialising DB …")
-    recommender.init_db()
-    recommender.load_ml25m_to_db()
-    seeded_admins = ensure_system_admins()
-    recommender.log.info("System admin accounts ready: %d", seeded_admins)
-    if os.getenv("MOVIEBUZZ_WARM_ENGINE") == "1":
+    startup_db_ready = False
+    try:
+        recommender.log.info("Initialising DB …")
+        recommender.init_db()
+        if _auto_load_dataset_on_startup():
+            recommender.log.info("Auto-loading MovieLens dataset during startup …")
+            recommender.load_ml25m_to_db()
+        else:
+            recommender.log.info(
+                "Skipping automatic MovieLens import on startup. "
+                "Run bootstrap_backend.py or run_training.py --skip-engine to load data manually."
+            )
+        metrics_synced = sync_eval_report_to_db(log_errors=True)
+        if metrics_synced:
+            recommender.log.info("Current evaluation report synced to MongoDB")
+        seeded_admins = ensure_system_admins()
+        recommender.log.info("System admin accounts ready: %d", seeded_admins)
+        startup_db_ready = True
+    except Exception as exc:
+        recommender.log.warning(
+            "DB startup bootstrap skipped; backend will continue with file-based fallbacks where possible: %s",
+            exc,
+        )
+
+    if startup_db_ready and os.getenv("MOVIEBUZZ_WARM_ENGINE") == "1":
         recommender.log.info("Warming engine …")
         recommender.RecommenderEngine.get()
-    else:
+    elif startup_db_ready:
         recommender.log.info("Skipping engine warmup; lightweight search and recommendations stay available")
+    else:
+        recommender.log.info("Skipping engine warmup because MongoDB bootstrap did not complete")
     yield
 
 app = FastAPI(title="MovieBuzz API", version="3.0", lifespan=lifespan)
@@ -146,26 +182,7 @@ def _wishlist_movie_items(
     search: Optional[str] = None,
     genre: Optional[str] = None,
 ) -> list[dict]:
-    with get_user_db() as conn:
-        rows = conn.execute("""
-            SELECT
-                movie_key,
-                title,
-                clean_title,
-                year,
-                genres,
-                poster,
-                plot,
-                "cast",
-                director,
-                imdb_rating,
-                runtime,
-                rating,
-                youtube_link,
-                created_at
-            FROM wishlist
-            ORDER BY created_at DESC, id DESC
-        """).fetchall()
+    rows = get_all_wishlist_items()
 
     items: list[dict] = []
     seen: set[str] = set()
@@ -246,59 +263,19 @@ def _admin_movie_items(
         genre=genre,
     )
     catalog_items = list(catalog_payload.get("items") or [])
-    catalog_total = int(catalog_payload.get("total") or 0)
-
-    seen = {str(item.get("movie_key", "")).strip() for item in catalog_items}
-    wishlist_items = []
-
-    for item in _wishlist_movie_items(search=search, genre=genre):
-        movie_key = str(item.get("movie_key", "")).strip()
-        if movie_key and movie_key in seen:
-            continue
-        wishlist_items.append(item)
-
-    combined_items = list(catalog_items)
-    wishlist_total = len(wishlist_items)
-
-    if safe_limit is None:
-        if safe_offset >= catalog_total:
-            combined_items = wishlist_items[safe_offset - catalog_total :]
-        else:
-            combined_items.extend(wishlist_items)
-    else:
-        if safe_offset >= catalog_total:
-            combined_items = []
-            wishlist_offset = safe_offset - catalog_total
-        else:
-            wishlist_offset = 0
-
-        remaining_slots = max(0, safe_limit - len(combined_items))
-        if remaining_slots:
-            combined_items.extend(
-                wishlist_items[wishlist_offset : wishlist_offset + remaining_slots]
-            )
-
-    total = catalog_total + wishlist_total
-    wishlist_genres = {
-        genre_name.strip()
-        for item in wishlist_items
-        if "no genres listed" not in str(item.get("genres") or "").lower()
-        for genre_name in str(item.get("genres") or "").replace("|", " ").split()
-        if genre_name.strip()
-    }
+    total = int(catalog_payload.get("total") or 0)
     available_genres = sorted(
         {
             *catalog_payload.get("genres", []),
-            *wishlist_genres,
         }
     )
 
     return {
-        "items": combined_items,
+        "items": catalog_items,
         "total": total,
         "limit": safe_limit if safe_limit is not None else total,
         "offset": safe_offset,
-        "has_more": (safe_offset + len(combined_items)) < total,
+        "has_more": (safe_offset + len(catalog_items)) < total,
         "genres": available_genres,
     }
 
@@ -321,22 +298,27 @@ def home_movies(
     return {"results": get_home_movies(limit, genre, user_email=user_email)}
 
 
+@app.get("/movies/{movie_id}/details")
+def movie_details(
+    movie_id: int,
+    user_email: Optional[str] = Query(default=None),
+):
+    movie = get_movie_details(movie_id, user_email=user_email)
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+    return movie
+
+
 @app.get("/admin/overview")
 def admin_overview():
-    with get_user_db() as conn:
-        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()
-        total_users = total_users[0] if total_users else 0
-        verified_result = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE verified = 1"
-        ).fetchone()
-        verified_users = verified_result[0] if verified_result else 0
-        wishlist_result = conn.execute("SELECT COUNT(*) FROM wishlist").fetchone()
-        wishlist_items = wishlist_result[0] if wishlist_result else 0
+    overview = get_user_store_overview()
+    total_users = overview.get("total_users", 0)
+    verified_users = overview.get("verified_users", 0)
+    wishlist_items = overview.get("wishlist_items", 0)
 
     try:
-        with get_movie_db() as conn:
-            catalog_result = conn.execute("SELECT COUNT(*) FROM movies").fetchone()
-            catalog_movies = catalog_result[0] if catalog_result else 0
+        movie_store = get_movie_db()
+        catalog_movies = int(movie_store.collection("movies").count_documents({}))
     except Exception:
         catalog_movies = 0
 
@@ -433,6 +415,12 @@ class FeedbackBody(BaseModel):
     movie_id: int
     feedback: str   # "like" | "dislike" | "neutral"
 
+
+class RatingBody(BaseModel):
+    user_id: str
+    movie_id: int
+    rating: int
+
 @app.post("/feedback")
 def feedback(body: FeedbackBody):
     """
@@ -444,6 +432,14 @@ def feedback(body: FeedbackBody):
         raise HTTPException(status_code=400,
                             detail="feedback must be 'like', 'dislike', or 'neutral'")
     return {"status": "recorded"}
+
+
+@app.post("/feedback/rating")
+def feedback_rating(body: RatingBody):
+    ok = save_movie_rating(body.user_id, body.movie_id, body.rating)
+    if not ok:
+        raise HTTPException(status_code=400, detail="rating must be an integer between 1 and 5")
+    return {"status": "recorded", "rating": int(body.rating)}
 
 
 # ── Admin: manual add ─────────────────────────────────────────────────────────

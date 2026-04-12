@@ -230,7 +230,7 @@ export function MoviesTable({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h3 className="text-sm text-zinc-500 dark:text-zinc-400">
-                Movie Records From SQLite
+                Movie Records
               </h3>
               <p className="mt-1 text-2xl font-semibold text-zinc-950 dark:text-white">
                 {loading ? "..." : total.toLocaleString()}

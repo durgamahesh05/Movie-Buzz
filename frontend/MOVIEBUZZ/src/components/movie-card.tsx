@@ -26,63 +26,15 @@ export default function MovieCard({
   );
   const remotePoster = movie.poster?.trim() || "";
   const hasRemotePoster = Boolean(remotePoster) && remotePoster !== fallbackPoster;
-  const [posterSrc, setPosterSrc] = useState(
-    hasRemotePoster ? fallbackPoster : (remotePoster || fallbackPoster),
-  );
-  const [posterLoading, setPosterLoading] = useState(hasRemotePoster);
+  const [posterFailed, setPosterFailed] = useState(false);
 
   useEffect(() => {
-    let isCancelled = false;
-    let timeoutId: number | null = null;
-    const clearPosterTimeout = () => {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-    };
-
-    setPosterSrc(fallbackPoster);
-    setPosterLoading(hasRemotePoster);
-
-    if (!hasRemotePoster) {
-      return () => {
-        isCancelled = true;
-      };
-    }
-
-    const image = new Image();
-    image.referrerPolicy = "no-referrer";
-    image.onload = () => {
-      if (isCancelled) {
-        return;
-      }
-      clearPosterTimeout();
-      setPosterSrc(remotePoster);
-      setPosterLoading(false);
-    };
-    image.onerror = () => {
-      if (isCancelled) {
-        return;
-      }
-      clearPosterTimeout();
-      setPosterSrc(fallbackPoster);
-      setPosterLoading(false);
-    };
-    image.src = remotePoster;
-
-    timeoutId = window.setTimeout(() => {
-      if (isCancelled) {
-        return;
-      }
-      setPosterSrc(fallbackPoster);
-      setPosterLoading(false);
-    }, 3500);
-
-    return () => {
-      isCancelled = true;
-      clearPosterTimeout();
-    };
+    setPosterFailed(false);
   }, [fallbackPoster, hasRemotePoster, remotePoster]);
+
+  const posterSrc = posterFailed || !hasRemotePoster
+    ? fallbackPoster
+    : remotePoster;
 
   return (
     <article className={`movie-card${isLight ? " movie-card--light" : ""}`}>
@@ -101,8 +53,7 @@ export default function MovieCard({
               loading="lazy"
               referrerPolicy="no-referrer"
               onError={() => {
-                setPosterSrc(fallbackPoster);
-                setPosterLoading(false);
+                setPosterFailed(true);
               }}
             />
           ) : (
