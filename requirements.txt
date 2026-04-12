@@ -1,3 +1,37 @@
-# Root-level requirements file for Railpack/Railway detection.
-# Actual dependencies are defined in backend/requirements.txt
--r backend/requirements.txt
+# MovieBuzz Backend – root-level requirements (mirrors backend/requirements.txt)
+# Railpack reads this file from the project root.
+
+# ── API ───────────────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+gunicorn>=22.0.0
+python-multipart
+requests
+httpx>=0.27.0
+pymongo[srv]>=4.8.0
+dnspython>=2.6.1
+certifi>=2024.7.4
+
+# ── ML / Recommendation ───────────────────────────────────────────────────────
+scikit-learn>=1.4.0
+scikit-surprise>=1.1.3
+numpy>=1.26.0,<2
+pandas>=2.2.0
+scipy>=1.13.0
+matplotlib>=3.8.0
+
+# ── Deep learning ─────────────────────────────────────────────────────────────
+sentence-transformers>=2.7.0
+tensorflow==2.15.0
+keras==2.15.0
+implicit>=0.7.2
+
+# ── NLP ───────────────────────────────────────────────────────────────────────
+rapidfuzz>=3.8.0
+textblob>=0.18.0
+xgboost>=2.0.0
+lightgbm>=4.5.0
+catboost>=1.2.7
+
+# ── Auth / Security ──────────────────────────────────────────────────────────
+bcrypt>=4.1.0
