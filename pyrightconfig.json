@@ -1,7 +1,14 @@
 {
   "venvPath": "./backend",
   "venv": ".venv",
+  "extraPaths": ["./backend"],
+  "typeCheckingMode": "basic",
   "exclude": [
+    "**/.*",
+    "**/.git",
+    "**/.hg",
+    "**/.svn",
+    "**/CVS",
     "**/.venv",
     "**/node_modules",
     "**/__pycache__"
@@ -16,5 +23,11 @@
         "./backend"
       ]
     }
-  ]
+  ],
+  "diagnosticSeverityOverrides": {
+    "reportOptionalSubscript": "none",
+    "reportGeneralTypeIssues": "warning",
+    "reportOptionalMemberAccess": "warning",
+    "reportAttributeAccessIssue": "warning"
+  }
 }

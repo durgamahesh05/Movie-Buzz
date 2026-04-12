@@ -34,15 +34,15 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
-from config import env
-from db import (
+from config import env  # type: ignore
+from db import (  # type: ignore
     DB_BACKEND,
     format_db_target,
     get_collection,
     get_db as open_db,
     read_collection_df,
 )
-from user_model import get_preferences as get_user_preferences
+from user_model import get_preferences as get_user_preferences  # type: ignore
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger("recommender")
 

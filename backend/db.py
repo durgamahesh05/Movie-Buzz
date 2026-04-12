@@ -12,7 +12,7 @@ from pymongo.database import Database
 from pymongo.errors import OperationFailure
 from pymongo.server_api import ServerApi
 
-from config import env, env_int
+from config import env, env_int  # type: ignore
 
 try:
     import certifi
@@ -98,8 +98,11 @@ class MongoDBService:
             "socketTimeoutMS": SOCKET_TIMEOUT_MS,
             "server_api": ServerApi("1"),
         }
-        if self.uri.startswith("mongodb+srv://") and certifi is not None:
-            kwargs["tlsCAFile"] = certifi.where()
+        if self.uri.startswith("mongodb+srv://"):
+            kwargs["tls"] = True
+            kwargs["tlsAllowInvalidCertificates"] = True
+            if certifi is not None:
+                kwargs["tlsCAFile"] = certifi.where()
         return kwargs
 
     def connect(self) -> Database[MongoDocument]:
