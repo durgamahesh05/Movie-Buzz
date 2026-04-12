@@ -17,6 +17,11 @@ services:
     maxNumInstances: 3
 
     envVars:
+      # Pin Python because Render defaults new services to a newer version that
+      # is not compatible with the current ML dependency stack.
+      - key: PYTHON_VERSION
+        value: "3.10.13"
+
       # Database - MongoDB only
       - key: DB_TYPE
         value: mongodb
