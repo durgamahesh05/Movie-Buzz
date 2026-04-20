@@ -1,0 +1,262 @@
+﻿c:\Users\durga\Desktop\MovieBuzz\backend\db.py
+  c:\Users\durga\Desktop\MovieBuzz\backend\db.py:232:37 - error: Argument of type "list[str]" cannot be assigned to parameter "columns" of type "Axes | None" in function "__init__"
+  ┬á┬áType "list[str]" is not assignable to type "Axes | None"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ndarray[Unknown, Unknown]"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "Index"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "Series"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Unknown]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+    ... (reportArgumentType)
+c:\Users\durga\Desktop\MovieBuzz\backend\mongo_connection.py
+  c:\Users\durga\Desktop\MovieBuzz\backend\mongo_connection.py:63:46 - error: Argument of type "int" cannot be assigned to parameter "document_class" of type "type[_DocumentType@MongoClient] | None" in function "__init__"
+  ┬á┬áType "int" is not assignable to type "type[_DocumentType@MongoClient] | None"
+  ┬á┬á┬á┬áType "int" is not assignable to type "type[_DocumentType@MongoClient]"
+  ┬á┬á┬á┬á"int" is not assignable to "None" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\mongo_connection.py:63:46 - error: Argument of type "int" cannot be assigned to parameter "tz_aware" of type "bool | None" in function "__init__"
+  ┬á┬áType "int" is not assignable to type "bool | None"
+  ┬á┬á┬á┬á"int" is not assignable to "bool"
+  ┬á┬á┬á┬á"int" is not assignable to "None" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\mongo_connection.py:63:46 - error: Argument of type "int" cannot be assigned to parameter "connect" of type "bool | None" in function "__init__"
+  ┬á┬áType "int" is not assignable to type "bool | None"
+  ┬á┬á┬á┬á"int" is not assignable to "bool"
+  ┬á┬á┬á┬á"int" is not assignable to "None" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\mongo_connection.py:63:46 - error: Argument of type "int" cannot be assigned to parameter "type_registry" of type "TypeRegistry | None" in function "__init__"
+  ┬á┬áType "int" is not assignable to type "TypeRegistry | None"
+  ┬á┬á┬á┬á"int" is not assignable to "TypeRegistry"
+  ┬á┬á┬á┬á"int" is not assignable to "None" (reportArgumentType)
+c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1264:22 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1267:21 - error: Argument of type "list[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "list[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1289:18 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1292:17 - error: Argument of type "list[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "list[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1424:18 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1425:39 - error: Argument of type "list[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "list[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1458:45 - error: Argument of type "set[int]" cannot be assigned to parameter "values" of type "Series | DataFrame | Sequence[Unknown] | Mapping[Unknown, Unknown]" in function "isin"
+  ┬á┬áType "set[int]" is not assignable to type "Series | DataFrame | Sequence[Unknown] | Mapping[Unknown, Unknown]"
+  ┬á┬á┬á┬á"set[int]" is not assignable to "Series"
+  ┬á┬á┬á┬á"set[int]" is not assignable to "DataFrame"
+  ┬á┬á┬á┬á"set[int]" is not assignable to "Sequence[Unknown]"
+  ┬á┬á┬á┬á"set[int]" is not assignable to "Mapping[Unknown, Unknown]" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1463:33 - error: Argument of type "Series | Unknown | DataFrame | Any | ndarray[Any, Unknown] | NDArray[Unknown]" cannot be assigned to parameter "right" of type "DataFrame | Series" in function "merge"
+  ┬á┬áType "Series | Unknown | DataFrame | Any | ndarray[Any, Unknown] | NDArray[Unknown]" is not assignable to type "DataFrame | Series"
+  ┬á┬á┬á┬áType "NDArray[Unknown]" is not assignable to type "DataFrame | Series"
+  ┬á┬á┬á┬á┬á┬á"ndarray[Any, dtype[Unknown]]" is not assignable to "DataFrame"
+  ┬á┬á┬á┬á┬á┬á"ndarray[Any, dtype[Unknown]]" is not assignable to "Series" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1511:22 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1514:21 - error: Argument of type "list[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "list[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1604:36 - warning: Cannot access attribute "movieId" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "movieId" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1605:34 - warning: Cannot access attribute "title" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "title" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1606:35 - warning: Cannot access attribute "genres" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "genres" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1607:41 - warning: Cannot access attribute "avg_rating" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "avg_rating" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1608:40 - warning: Cannot access attribute "num_ratings" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "num_ratings" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1609:46 - warning: Cannot access attribute "sentiment_score" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "sentiment_score" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1610:45 - warning: Cannot access attribute "trending_score" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "trending_score" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1611:35 - warning: Cannot access attribute "poster" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "poster" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1612:35 - warning: Cannot access attribute "source" for class "tuple[Any, ...]"
+  ┬á┬áAttribute "source" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1636:18 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1639:17 - error: Argument of type "List[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "List[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"List[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"List[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"List[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1645:16 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1647:21 - error: Argument of type "List[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "List[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"List[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"List[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"List[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1654:9 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:1657:21 - error: Argument of type "List[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "List[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"List[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"List[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"List[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2132:24 - error: No overloads for "rename" match the provided arguments
+  ┬á┬áArgument types: (dict[str, str]) (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2142:11 - warning: "fillna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2151:42 - error: Argument of type "list[str]" cannot be assigned to parameter "columns" of type "Axes | None" in function "__init__"
+  ┬á┬áType "list[str]" is not assignable to type "Axes | None"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ndarray[Unknown, Unknown]"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "Index"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "Series"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Unknown]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2171:50 - warning: Cannot access attribute "shape" for class "tuple[Unknown, Unbound | Any | float | generic | bool | int | complex | str | bytes | memoryview[int] | Unknown]"
+  ┬á┬áAttribute "shape" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2171:50 - warning: Cannot access attribute "shape" for class "str"
+  ┬á┬áAttribute "shape" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2171:50 - warning: Cannot access attribute "shape" for class "tuple[str, str]"
+  ┬á┬áAttribute "shape" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2171:50 - warning: Cannot access attribute "shape" for class "tuple[Unknown, Unknown | Any]"
+  ┬á┬áAttribute "shape" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2360:40 - error: Argument of type "Dict[Unknown, Unknown]" cannot be assigned to parameter "func" of type "PythonFuncType" in function "map"
+  ┬á┬áType "Dict[Unknown, Unknown]" is not assignable to type "PythonFuncType" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2361:41 - error: Argument of type "Dict[Unknown, Unknown]" cannot be assigned to parameter "func" of type "PythonFuncType" in function "map"
+  ┬á┬áType "Dict[Unknown, Unknown]" is not assignable to type "PythonFuncType" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2421:44 - warning: Cannot access attribute "values" for class "ndarray[Any, Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2421:44 - warning: Cannot access attribute "values" for class "NDArray[Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2421:44 - warning: Cannot access attribute "values" for class "NDArray[Any]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2422:44 - warning: Cannot access attribute "values" for class "ndarray[Any, Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2422:44 - warning: Cannot access attribute "values" for class "NDArray[Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2422:44 - warning: Cannot access attribute "values" for class "NDArray[Any]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2424:44 - warning: Cannot access attribute "values" for class "ndarray[Any, Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2424:44 - warning: Cannot access attribute "values" for class "NDArray[Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2424:44 - warning: Cannot access attribute "values" for class "NDArray[Any]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2425:44 - warning: Cannot access attribute "values" for class "ndarray[Any, Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2425:44 - warning: Cannot access attribute "values" for class "NDArray[Unknown]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2425:44 - warning: Cannot access attribute "values" for class "NDArray[Any]"
+  ┬á┬áAttribute "values" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2590:11 - warning: "fillna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2594:11 - warning: "fillna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2636:90 - warning: "fillna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2666:70 - warning: Cannot access attribute "astype" for class "float"
+  ┬á┬áAttribute "astype" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2666:70 - warning: Cannot access attribute "astype" for class "int"
+  ┬á┬áAttribute "astype" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2667:76 - warning: Cannot access attribute "astype" for class "float"
+  ┬á┬áAttribute "astype" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2667:76 - warning: Cannot access attribute "astype" for class "int"
+  ┬á┬áAttribute "astype" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2677:85 - warning: "astype" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2766:14 - warning: "fillna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2772:14 - warning: "fillna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2812:24 - error: No overloads for "sort_values" match the provided arguments
+  ┬á┬áArgument types: (Literal['avg_rating'], Literal[False]) (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2828:31 - error: Argument of type "Hashable | Series | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+  ┬á┬áType "Hashable | Series | Unknown" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬áType "Hashable" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬á┬á┬á"Hashable" is not assignable to "str"
+  ┬á┬á┬á┬á┬á┬á"Hashable" is incompatible with protocol "Buffer"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__buffer__" is not present
+  ┬á┬á┬á┬á┬á┬á"Hashable" is incompatible with protocol "SupportsInt"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__int__" is not present
+  ┬á┬á┬á┬á┬á┬á"Hashable" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2828:31 - error: Argument of type "Hashable | Series | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+  ┬á┬áType "Hashable | Series | Unknown" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬áType "Hashable" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬á┬á┬á"Hashable" is not assignable to "str"
+  ┬á┬á┬á┬á┬á┬á"Hashable" is incompatible with protocol "Buffer"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__buffer__" is not present
+  ┬á┬á┬á┬á┬á┬á"Hashable" is incompatible with protocol "SupportsInt"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__int__" is not present
+  ┬á┬á┬á┬á┬á┬á"Hashable" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2874:62 - warning: Cannot access attribute "index" for class "ndarray[Any, Unknown]"
+  ┬á┬áAttribute "index" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2874:62 - warning: Cannot access attribute "index" for class "NDArray[Unknown]"
+  ┬á┬áAttribute "index" is unknown (reportAttributeAccessIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2921:20 - error: Argument of type "Unknown | Index | Index* | tuple[Unknown, ...] | MultiIndex | RangeIndex | int" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+  ┬á┬áType "Unknown | Index | Index* | tuple[Unknown, ...] | MultiIndex | RangeIndex | int" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬áType "Index" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬á┬á┬á"Index" is not assignable to "str"
+  ┬á┬á┬á┬á┬á┬á"Index" is incompatible with protocol "Buffer"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__buffer__" is not present
+  ┬á┬á┬á┬á┬á┬á"Index" is incompatible with protocol "SupportsInt"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__int__" is not present
+  ┬á┬á┬á┬á┬á┬á"Index" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:2921:20 - error: Argument of type "Unknown | Index | Index* | tuple[Unknown, ...] | MultiIndex | RangeIndex | int" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+  ┬á┬áType "Unknown | Index | Index* | tuple[Unknown, ...] | MultiIndex | RangeIndex | int" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬áType "Index" is not assignable to type "ConvertibleToInt"
+  ┬á┬á┬á┬á┬á┬á"Index" is not assignable to "str"
+  ┬á┬á┬á┬á┬á┬á"Index" is incompatible with protocol "Buffer"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__buffer__" is not present
+  ┬á┬á┬á┬á┬á┬á"Index" is incompatible with protocol "SupportsInt"
+  ┬á┬á┬á┬á┬á┬á┬á┬á"__int__" is not present
+  ┬á┬á┬á┬á┬á┬á"Index" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:3136:19 - error: No overloads for "sort_values" match the provided arguments
+  ┬á┬áArgument types: (list[str], Literal[False]) (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:3272:38 - error: Argument of type "Series | Any | ndarray[Any, Unknown] | Unknown | NDArray[Unknown]" cannot be assigned to parameter "title" of type "str" in function "_clean_title"
+  ┬á┬áType "Series | Any | ndarray[Any, Unknown] | Unknown | NDArray[Unknown]" is not assignable to type "str"
+  ┬á┬á┬á┬á"Series" is not assignable to "str" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:3275:27 - error: Argument of type "Series | Any | ndarray[Any, Unknown] | Unknown | NDArray[Unknown]" cannot be assigned to parameter "title" of type "str" in function "_movie_payload"
+  ┬á┬áType "Series | Any | ndarray[Any, Unknown] | Unknown | NDArray[Unknown]" is not assignable to type "str"
+  ┬á┬á┬á┬á"Series" is not assignable to "str" (reportArgumentType)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:3815:25 - error: No overloads for "read_csv" match the provided arguments (reportCallIssue)
+  c:\Users\durga\Desktop\MovieBuzz\backend\recommender.py:3817:25 - error: Argument of type "list[str]" cannot be assigned to parameter "usecols" of type "UsecolsArgType[Unknown]" in function "read_csv"
+  ┬á┬áType "list[str]" is not assignable to type "UsecolsArgType[Unknown]"
+  ┬á┬á┬á┬á"list[str]" is incompatible with protocol "SequenceNotStr[Hashable]"
+  ┬á┬á┬á┬á┬á┬á"index" is an incompatible type
+  ┬á┬á┬á┬á┬á┬á┬á┬áType "(value: str, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int" is not assignable to type "(value: Any, /, start: int = 0, stop: int = ...) -> int"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "start"
+  ┬á┬á┬á┬á┬á┬á┬á┬á┬á┬áMissing keyword parameter "stop"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "range"
+  ┬á┬á┬á┬á"list[str]" is not assignable to "ExtensionArray"
+    ... (reportArgumentType)
+35 errors, 38 warnings, 0 informations

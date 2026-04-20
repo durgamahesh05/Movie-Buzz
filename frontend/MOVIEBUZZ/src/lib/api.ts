@@ -379,13 +379,21 @@ export function confirmDeleteAccount(email: string, otp: string) {
   });
 }
 
-export async function getHomeMovies(limit = 50, genre?: string, userEmail?: string) {
+export async function getHomeMovies(
+  limit = 50,
+  genre?: string,
+  userEmail?: string,
+  preferenceKey?: string,
+) {
   const params = new URLSearchParams({ limit: String(limit) });
   if (genre?.trim()) {
     params.set("genre", genre.trim());
   }
   if (userEmail?.trim()) {
     params.set("user_email", userEmail.trim().toLowerCase());
+  }
+  if (preferenceKey?.trim()) {
+    params.set("preference_key", preferenceKey.trim().toLowerCase());
   }
   const data = await request<MovieListResponse>(`/movies/home?${params.toString()}`);
   return data.results ?? [];
@@ -513,6 +521,19 @@ export function deleteAdminUser(email: string) {
   });
 }
 
+export function updateAdminUserRole(
+  email: string,
+  role: "user" | "mod" | "admin",
+) {
+  return request<MessageResponse>(
+    `/auth/admin/users/${encodeURIComponent(email)}/role`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    },
+  );
+}
+
 export async function getAdminMovies(options?: {
   limit?: number;
   offset?: number;
@@ -551,6 +572,7 @@ export function addAdminMoviesManual(movies: Array<{
   rating?: number;
   year?: string;
   poster?: string;
+  youtube_link?: string;
 }>) {
   return request<{ inserted: number; status: string }>("/admin/movies/manual", {
     method: "POST",

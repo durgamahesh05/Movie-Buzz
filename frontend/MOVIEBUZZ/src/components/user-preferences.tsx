@@ -250,13 +250,20 @@ export function UserPreferences({
         preferred_moods: formData.mood ? [formData.mood] : [],
       };
 
-      await saveUserPreferences(user.email, payload);
+      const saved = await saveUserPreferences(user.email, payload);
       invalidateHomeMovieCache();
+
+      const savedAge =
+        typeof saved.age === "number" ? saved.age : parsedAge;
+      const savedGenres =
+        saved.preferred_genres ?? formData.genres;
+      const savedMoods =
+        saved.preferred_moods ?? (formData.mood ? [formData.mood] : []);
       
       onSaved?.({
-        age: parsedAge,
-        preferredGenres: formData.genres,
-        preferredMoods: formData.mood ? [formData.mood] : [],
+        age: savedAge,
+        preferredGenres: savedGenres,
+        preferredMoods: savedMoods,
       });
 
       setMessage({ type: "success", text: "Preferences saved! Curating your feed..." });

@@ -1,4 +1,12 @@
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  lazy,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Bookmark,
   ChevronDown,
@@ -14,7 +22,6 @@ import {
 } from "lucide-react";
 import { Footer } from "./footer";
 import MovieCard from "./movie-card";
-import TrailerPlayer from "./TrailerPlayer";
 import {
   addWishlistMovie,
   ApiError,
@@ -32,6 +39,7 @@ import {
 import {
   HOME_CACHE_INVALIDATED_EVENT,
   getHomeCacheKey,
+  invalidateHomeMovieCache,
   isHomeCacheRefreshKey,
 } from "../lib/movie-cache";
 import {
@@ -45,6 +53,8 @@ import {
 import { useAppStore } from "../store/appStore";
 import { useNavigate } from "react-router-dom";
 import { MovieBuzzLogo } from "./moviebuzz-logo";
+
+const TrailerPlayer = lazy(() => import("./TrailerPlayer"));
 
 const GENRES = [
   "All",
@@ -161,6 +171,22 @@ function dedupeMovies(items: Movie[]) {
   return [...unique.values()];
 }
 
+function patchMovieByKey(
+  items: Movie[],
+  movieKey: string,
+  patch: Partial<Movie>,
+): Movie[] {
+  let changed = false;
+  const nextItems = items.map((movie) => {
+    if (movie.movie_key !== movieKey) {
+      return movie;
+    }
+    changed = true;
+    return { ...movie, ...patch };
+  });
+  return changed ? nextItems : items;
+}
+
 function getMovieDescription(movie: Movie): string {
   if (movie.description?.trim()) {
     return movie.description.trim();
@@ -183,6 +209,17 @@ function feedbackLabelFromRating(rating: number): string {
     return "Saved as disliked";
   }
   return "Saved as neutral";
+}
+
+function openUrlInCurrentTab(url: string) {
+  try {
+    const openedWindow = window.open(url, "_self");
+    if (!openedWindow) {
+      window.location.assign(url);
+    }
+  } catch {
+    window.location.assign(url);
+  }
 }
 
 function MovieGridSkeleton({
@@ -282,8 +319,8 @@ export default function Dashboard() {
 
   const wishlistCacheKey = `${WISHLIST_CACHE_PREFIX}${user.email.toLowerCase()}`;
   const homeCacheKey = useMemo(
-    () => getHomeCacheKey(activeGenre, user.email),
-    [activeGenre, user.email],
+    () => getHomeCacheKey(activeGenre, user.email, preferenceSignature),
+    [activeGenre, preferenceSignature, user.email],
   );
   const queryDisplayValue = query.trim();
   const queryValue = useDeferredValue(queryDisplayValue);
@@ -329,7 +366,12 @@ export default function Dashboard() {
       try {
         const genreFilter = activeGenre === "All" ? undefined : activeGenre;
         const homeMovies = enrichMovies(
-          await getHomeMovies(50, genreFilter, user.email.toLowerCase()),
+          await getHomeMovies(
+            50,
+            genreFilter,
+            user.email.toLowerCase(),
+            preferenceSignature,
+          ),
         );
         if (isCancelled) {
           return;
@@ -357,7 +399,7 @@ export default function Dashboard() {
     return () => {
       isCancelled = true;
     };
-  }, [activeGenre, homeCacheKey, homeRefreshKey, user.email]);
+  }, [activeGenre, homeCacheKey, homeRefreshKey, preferenceSignature, user.email]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -608,6 +650,11 @@ export default function Dashboard() {
       await rateMovie(user.email.toLowerCase(), selectedMovie.movie_id, rating);
       const userFeedback =
         rating >= 4 ? "like" : rating <= 2 ? "dislike" : "neutral";
+      const movieKey = selectedMovie.movie_key;
+      const ratingPatch: Partial<Movie> = {
+        user_rating: rating,
+        user_feedback: userFeedback,
+      };
       setSelectedMovie((current) =>
         current
           ? {
@@ -617,7 +664,20 @@ export default function Dashboard() {
             }
           : current,
       );
+      setMovies((current) => {
+        const nextItems = patchMovieByKey(current, movieKey, ratingPatch);
+        writeCachedMovies(homeCacheKey, nextItems);
+        return nextItems;
+      });
+      setWishlist((current) => {
+        const nextItems = patchMovieByKey(current, movieKey, ratingPatch);
+        writeCachedMovies(wishlistCacheKey, nextItems);
+        return nextItems;
+      });
+      setSearchResults((current) => patchMovieByKey(current, movieKey, ratingPatch));
+      setRecommendedMovies((current) => patchMovieByKey(current, movieKey, ratingPatch));
       setRatingMessage(feedbackLabelFromRating(rating));
+      invalidateHomeMovieCache();
     } catch (ratingError) {
       setMovieDetailsError(
         ratingError instanceof ApiError
@@ -1545,7 +1605,7 @@ export default function Dashboard() {
                       return;
                     }
                     if (selectedMovie.youtube_link) {
-                      window.open(selectedMovie.youtube_link, "_blank", "noopener,noreferrer");
+                      openUrlInCurrentTab(selectedMovie.youtube_link);
                     }
                   }}
                   style={{
@@ -1570,10 +1630,13 @@ export default function Dashboard() {
         </div>
       )}
 
-      <TrailerPlayer
-        movieId={trailerMovieId}
-        onClose={() => setTrailerMovieId(null)}
-      />
+      <Suspense fallback={null}>
+        <TrailerPlayer
+          movieId={trailerMovieId}
+          fallbackUrl={selectedMovie?.youtube_link ?? null}
+          onClose={() => setTrailerMovieId(null)}
+        />
+      </Suspense>
 
       {showDeleteModal && (
         <div

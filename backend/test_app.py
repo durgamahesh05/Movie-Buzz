@@ -1,6 +1,7 @@
 import os
 from fastapi.testclient import TestClient
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 os.environ["MOVIEBUZZ_SKIP_STARTUP"] = "1"
 
@@ -88,6 +89,119 @@ def test_search_movies_uses_lightweight_fallback_when_db_results_are_empty(
     mock_search_movies_from_lightweight_catalog.assert_called_once_with("harry potter", limit=5)
 
 
+@patch("recommender._lightweight_catalog_movies")
+@patch(
+    "recommender._candidate_to_movie_payload",
+    side_effect=lambda candidate: {
+        "movie_key": candidate["movie_key"],
+        "movie_id": candidate["movie_id"],
+        "title": candidate["title"],
+    },
+)
+@patch("recommender.get_collection")
+def test_list_admin_movies_queries_storage_without_full_catalog_scan(
+    mock_get_collection,
+    mock_candidate_to_movie_payload,
+    mock_lightweight_catalog_movies,
+):
+    recommender._ADMIN_CATALOG_GENRES_CACHE.clear()
+    recommender._LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
+
+    movies_collection = MagicMock()
+    movies_collection.count_documents.return_value = 2
+    movies_collection.distinct.return_value = ["Action Comedy", "Drama"]
+    movies_collection.aggregate.return_value = [
+        {
+            "movieId": -3,
+            "title": "Admin Pick (2026)",
+            "genres": "Action Comedy",
+            "avg_rating": 7.4,
+            "num_ratings": 1,
+            "trending_score": 0.0,
+            "poster": "",
+            "source": "admin",
+        }
+    ]
+    mock_get_collection.return_value = movies_collection
+
+    try:
+        payload = recommender.list_admin_movies(limit=1, offset=0)
+    finally:
+        recommender._ADMIN_CATALOG_GENRES_CACHE.clear()
+        recommender._LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
+
+    assert payload["total"] == 2
+    assert payload["limit"] == 1
+    assert payload["offset"] == 0
+    assert payload["has_more"] is True
+    assert payload["genres"] == ["Action", "Comedy", "Drama"]
+    assert payload["items"][0]["movie_key"] == "admin-pick-2026"
+    assert payload["items"][0]["movie_id"] == -3
+    assert payload["items"][0]["title"] == "Admin Pick (2026)"
+    assert payload["items"][0]["source"] == "admin"
+    assert payload["items"][0]["source_label"] == "Admin"
+    assert payload["items"][0]["can_delete"] is True
+    assert payload["items"][0]["imdb_rating"] == "7.4"
+    assert payload["items"][0]["rating"] == 7.4
+    movies_collection.count_documents.assert_called_once_with({})
+    movies_collection.aggregate.assert_called_once()
+    movies_collection.distinct.assert_called_once_with("genres")
+    mock_lightweight_catalog_movies.assert_not_called()
+
+
+@patch("recommender._apply_preference_ranking", side_effect=lambda movies, user_email, limit: movies[:limit])
+@patch("recommender._user_feedback_movie_ids", return_value=({22}, set()))
+@patch("recommender._lightweight_catalog_movies")
+@patch("recommender._search_movies_from_lightweight_catalog")
+def test_recommend_from_database_uses_saved_feedback_for_lightweight_results(
+    mock_search_movies_from_lightweight_catalog,
+    mock_lightweight_catalog_movies,
+    mock_user_feedback_movie_ids,
+    mock_apply_preference_ranking,
+):
+    anchor = recommender._movie_search_candidate(
+        title="Quiet Drama (2024)",
+        genres="Drama",
+        movie_id=11,
+        source="admin",
+    )
+    liked_candidate = recommender._movie_search_candidate(
+        title="Solar Storm (2024)",
+        genres="Sci-Fi",
+        avg_rating=5.0,
+        movie_id=22,
+        source="admin",
+    )
+    same_genre_candidate = recommender._movie_search_candidate(
+        title="Family Tale (2020)",
+        genres="Drama",
+        avg_rating=0.0,
+        movie_id=33,
+        source="catalog",
+    )
+
+    mock_search_movies_from_lightweight_catalog.return_value = [anchor]
+    mock_lightweight_catalog_movies.return_value = [
+        anchor,
+        liked_candidate,
+        same_genre_candidate,
+    ]
+
+    results = recommender._recommend_from_database(
+        "Quiet Drama",
+        top_n=2,
+        user_email="tester@example.com",
+    )
+
+    assert results["resolved_title"] == "Quiet Drama"
+    assert [movie["title"] for movie in results["results"]] == [
+        "Solar Storm (2024)",
+        "Family Tale (2020)",
+    ]
+    mock_user_feedback_movie_ids.assert_called_once_with("tester@example.com")
+    mock_apply_preference_ranking.assert_called_once()
+
+
 @patch("app.recommend_movies")
 def test_recommend_success(mock_recommend_movies):
     mock_recommend_movies.return_value = {"resolved_title": "The Matrix", "results": []}
@@ -102,6 +216,35 @@ def test_recommend_success(mock_recommend_movies):
         top_n=50,
         user_email=None,
     )
+
+
+@patch("trailer_router._cache_is_fresh", return_value=True)
+@patch("trailer_router._trailer_cache")
+def test_trailer_route_returns_cached_negative_result(
+    mock_trailer_cache,
+    mock_cache_is_fresh,
+):
+    cache_collection = MagicMock()
+    cache_collection.find_one.return_value = {
+        "title": "No Trailer Movie",
+        "year": "2024",
+        "video_id": None,
+        "fetched_at": "2026-04-14T00:00:00",
+    }
+    mock_trailer_cache.return_value = cache_collection
+
+    response = client.get("/api/trailer/321")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "movie_id": 321,
+        "title": "No Trailer Movie",
+        "year": "2024",
+        "video_id": None,
+        "embed_url": None,
+        "found": False,
+    }
+    mock_cache_is_fresh.assert_called_once()
 
 def test_list_moods():
     response = client.get("/moods")
@@ -145,12 +288,48 @@ def test_feedback_invalid(mock_record_feedback):
 @patch("app.add_movies_to_db")
 def test_admin_add_manual(mock_add_movies):
     mock_add_movies.return_value = 1
-    movie_payload = [{"title": "New Movie", "genres": "Action", "rating": 5.0, "year": "2023", "poster": ""}]
+    movie_payload = [{
+        "title": "New Movie",
+        "genres": "Action",
+        "rating": 5.0,
+        "year": "2023",
+        "poster": "",
+        "youtube_link": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    }]
     response = client.post("/admin/movies/manual", json=movie_payload)
     
     assert response.status_code == 200
     assert response.json() == {"inserted": 1, "status": "ok"}
-    mock_add_movies.assert_called_once()
+    mock_add_movies.assert_called_once_with(movie_payload)
+
+
+@patch.object(recommender.RecommenderEngine, "_fetch_omdb", return_value={})
+@patch.object(recommender.RecommenderEngine, "reset")
+@patch("recommender._next_admin_movie_id", return_value=-1)
+@patch("recommender.get_collection")
+def test_add_movies_to_db_preserves_supplied_youtube_url(
+    mock_get_collection,
+    _mock_next_admin_movie_id,
+    _mock_reset,
+    _mock_fetch_omdb,
+):
+    movies_collection = MagicMock()
+    mock_get_collection.return_value = movies_collection
+    movie_payload = [{
+        "title": "New Movie",
+        "genres": "Action",
+        "rating": 5.0,
+        "year": "2023",
+        "poster": "",
+        "youtube_link": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    }]
+
+    inserted = recommender.add_movies_to_db(movie_payload)
+
+    assert inserted == 1
+    mock_get_collection.assert_called_once_with("movies")
+    inserted_rows = movies_collection.insert_many.call_args.args[0]
+    assert inserted_rows[0]["youtube_link"] == movie_payload[0]["youtube_link"]
 
 
 @patch("auth_routes.update_preferences")

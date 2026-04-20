@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import ssl
 from email.message import EmailMessage
 from typing import Iterable
 
@@ -28,10 +29,14 @@ SSL_PORT = env_int("SMTP_SSL_PORT", "MOVIEBUZZ_SMTP_SSL_PORT", default=465)
 TLS_PORT = env_int("SMTP_PORT", "MOVIEBUZZ_SMTP_TLS_PORT", default=587)
 SMTP_TIMEOUT = env_int("SMTP_TIMEOUT", "MOVIEBUZZ_SMTP_TIMEOUT", default=15)
 
-SMTP_USERNAME = env(
+_RAW_SMTP_USERNAME = env(
     "SMTP_USER",
+    "MOVIEBUZZ_SMTP_USER",
     "MOVIEBUZZ_SMTP_EMAIL",
     "EMAIL_USERNAME",
+    "EMAIL_USER",
+    "EMAIL_HOST_USER",
+    "MAIL_USERNAME",
     default="",
 )
 
@@ -44,24 +49,42 @@ def _normalize_secret(value: str) -> str:
     return cleaned.rstrip("\r\n")
 
 
+def _env_bool(*names: str, default: bool = False) -> bool:
+    raw_value = env(*names, default="")
+    normalized = str(raw_value or "").strip().lower()
+    if not normalized:
+        return default
+    return normalized in {"1", "true", "yes", "on"}
+
+
+SMTP_USERNAME = _normalize_secret(_RAW_SMTP_USERNAME)
 SMTP_PASSWORD = _normalize_secret(
     env(
         "SMTP_PASSWORD",
         "MOVIEBUZZ_SMTP_PASSWORD",
         "EMAIL_PASSWORD",
+        "EMAIL_HOST_PASSWORD",
+        "MAIL_PASSWORD",
         default="",
     )
 )
 SENDER_EMAIL = _normalize_secret(
     env(
         "SMTP_FROM",
+        "MOVIEBUZZ_SMTP_FROM",
         "MOVIEBUZZ_SMTP_EMAIL",
         "EMAIL_FROM",
+        "EMAIL_SENDER",
         default=SMTP_USERNAME,
     )
 )
 SUPPORT_EMAIL = _normalize_secret(
     env("SUPPORT_EMAIL", "MOVIEBUZZ_SUPPORT_EMAIL", default=SENDER_EMAIL)
+)
+SMTP_PREFER_SSL = _env_bool(
+    "SMTP_USE_SSL",
+    "MOVIEBUZZ_SMTP_USE_SSL",
+    default=TLS_PORT == 465,
 )
 
 
@@ -81,7 +104,7 @@ def _smtp_hosts() -> list[str]:
         "MOVIEBUZZ_SMTP_SERVICE",
         default="",
     ).strip().lower()
-    if not configured and service:
+    if service:
         mapped_hosts = SERVICE_HOSTS.get(service)
         if mapped_hosts:
             hosts.extend(mapped_hosts)
@@ -106,7 +129,7 @@ def _send_with_ssl(hosts: Iterable[str], message: EmailMessage) -> bool:
     for host in hosts:
         try:
             with smtplib.SMTP_SSL(host, SSL_PORT, timeout=SMTP_TIMEOUT) as server:
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.login(SMTP_USERNAME.strip(), SMTP_PASSWORD)
                 server.send_message(message)
             log.info("Email sent via %s:%s to %s", host, SSL_PORT, message["To"])
             return True
@@ -116,13 +139,14 @@ def _send_with_ssl(hosts: Iterable[str], message: EmailMessage) -> bool:
 
 
 def _send_with_starttls(hosts: Iterable[str], message: EmailMessage) -> bool:
+    tls_context = ssl.create_default_context()
     for host in hosts:
         try:
             with smtplib.SMTP(host, TLS_PORT, timeout=SMTP_TIMEOUT) as server:
                 server.ehlo()
-                server.starttls()
+                server.starttls(context=tls_context)
                 server.ehlo()
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.login(SMTP_USERNAME.strip(), SMTP_PASSWORD)
                 server.send_message(message)
             log.info("Email sent via %s:%s to %s", host, TLS_PORT, message["To"])
             return True
@@ -145,9 +169,14 @@ def send_email(receiver_email: str, subject: str, body: str) -> bool:
     message.set_content(body)
 
     hosts = _smtp_hosts()
-    if _send_with_ssl(hosts, message):
+    if SMTP_PREFER_SSL:
+        if _send_with_ssl(hosts, message):
+            return True
+        return _send_with_starttls(hosts, message)
+
+    if _send_with_starttls(hosts, message):
         return True
-    return _send_with_starttls(hosts, message)
+    return _send_with_ssl(hosts, message)
 
 
 def send_verification_otp_email(receiver_email: str, otp_code: str, name: str = "") -> bool:

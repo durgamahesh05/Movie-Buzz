@@ -252,7 +252,7 @@ export function AdminDashboard() {
   const { isDark, toggleTheme, logout, user } = useAppStore();
   const [activeView, setActiveView] = useState<ViewType>("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [catalogRefreshToken, setCatalogRefreshToken] = useState(0);
+  const [adminRefreshToken, setAdminRefreshToken] = useState(0);
   const [modelMetrics, setModelMetrics] = useState<AdminModelMetrics>(EMPTY_MODEL_METRICS);
   const [plotUrls, setPlotUrls] =
     useState<Record<AdminMetricPlotKind, string>>(EMPTY_METRIC_PLOTS);
@@ -270,8 +270,8 @@ export function AdminDashboard() {
     navigate("/login");
   };
 
-  const handleCatalogChange = () => {
-    setCatalogRefreshToken((current) => current + 1);
+  const refreshAdminData = () => {
+    setAdminRefreshToken((current) => current + 1);
   };
 
   useEffect(() => {
@@ -438,7 +438,7 @@ export function AdminDashboard() {
               text={text}
               subtext={subtext}
             />
-            <StatsCards refreshToken={catalogRefreshToken} />
+            <StatsCards refreshToken={adminRefreshToken} />
 
             <div
               style={{
@@ -460,7 +460,7 @@ export function AdminDashboard() {
                 >
                   Recent Users
                 </h2>
-                <UsersTable limit={5} />
+                <UsersTable limit={5} refreshToken={adminRefreshToken} />
               </div>
               <div>
                 <h2
@@ -474,7 +474,7 @@ export function AdminDashboard() {
                 >
                   Recent Movies
                 </h2>
-                <MoviesTable limit={5} refreshToken={catalogRefreshToken} />
+                <MoviesTable limit={5} refreshToken={adminRefreshToken} />
               </div>
             </div>
           </div>
@@ -489,7 +489,10 @@ export function AdminDashboard() {
               text={text}
               subtext={subtext}
             />
-            <UsersTable />
+            <UsersTable
+              refreshToken={adminRefreshToken}
+              onUsersChange={refreshAdminData}
+            />
           </div>
         );
 
@@ -503,8 +506,8 @@ export function AdminDashboard() {
               subtext={subtext}
             />
             <MoviesTable
-              refreshToken={catalogRefreshToken}
-              onCatalogChange={handleCatalogChange}
+              refreshToken={adminRefreshToken}
+              onCatalogChange={refreshAdminData}
             />
           </div>
         );
@@ -519,7 +522,7 @@ export function AdminDashboard() {
               subtext={subtext}
             />
 
-            <StatsCards refreshToken={catalogRefreshToken} />
+            <StatsCards refreshToken={adminRefreshToken} />
 
             {metricsError ? (
               <div

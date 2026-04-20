@@ -60,7 +60,7 @@ class MongoDBConnection:
                 kwargs["tls"] = True
                 kwargs["tlsAllowInvalidCertificates"] = True
             
-            self.client = MongoClient(uri, **kwargs)
+            self.client = MongoClient(uri, **kwargs)  # type: ignore
             
             # Test connection
             self.client.admin.command('ping')

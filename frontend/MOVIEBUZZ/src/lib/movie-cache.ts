@@ -2,12 +2,18 @@ export const HOME_CACHE_PREFIX = "moviebuzz-home-movies-v4-";
 export const HOME_CACHE_INVALIDATED_EVENT = "moviebuzz:home-cache-invalidated";
 const HOME_CACHE_REFRESH_KEY = "moviebuzz-home-movies-refresh";
 
-export function getHomeCacheKey(genre: string, userEmail = "") {
+export function getHomeCacheKey(
+  genre: string,
+  userEmail = "",
+  preferenceKey = "",
+) {
   const normalizedGenre =
     genre.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "all";
   const normalizedUser =
     userEmail.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "guest";
-  return `${HOME_CACHE_PREFIX}${normalizedUser}-${normalizedGenre}`;
+  const normalizedPreferences =
+    preferenceKey.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "default";
+  return `${HOME_CACHE_PREFIX}${normalizedUser}-${normalizedGenre}-${normalizedPreferences}`;
 }
 
 export function isHomeCacheRefreshKey(key: string | null) {

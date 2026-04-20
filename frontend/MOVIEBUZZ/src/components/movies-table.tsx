@@ -67,6 +67,7 @@ export function MoviesTable({
     rating: "",
     year: "",
     poster: "",
+    youtubeUrl: "",
   });
 
   useEffect(() => {
@@ -142,6 +143,7 @@ export function MoviesTable({
       rating: "",
       year: "",
       poster: "",
+      youtubeUrl: "",
     });
   };
 
@@ -164,6 +166,7 @@ export function MoviesTable({
             rating: form.rating ? Number(form.rating) : undefined,
             year: form.year.trim(),
             poster: form.poster.trim(),
+            youtube_link: form.youtubeUrl.trim(),
           },
         ]);
         if (response.inserted > 0) {
@@ -545,6 +548,23 @@ export function MoviesTable({
                     value={form.poster}
                     onChange={(event) =>
                       setForm((current) => ({ ...current, poster: event.target.value }))
+                    }
+                    className="flex h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white dark:placeholder:text-zinc-500 dark:focus:ring-zinc-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                    YouTube Trailer URL (optional)
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    value={form.youtubeUrl}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        youtubeUrl: event.target.value,
+                      }))
                     }
                     className="flex h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white dark:placeholder:text-zinc-500 dark:focus:ring-zinc-100"
                   />

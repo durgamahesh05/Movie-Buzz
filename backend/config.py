@@ -46,6 +46,7 @@ def env_int(*names: str, default: int) -> int:
         raw_value = os.getenv(name)
         if raw_value is None or raw_value.strip() == "":
             continue
+        raw_value = raw_value.split("#", 1)[0].strip()
         try:
             return int(raw_value)
         except ValueError:

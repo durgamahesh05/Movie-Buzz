@@ -15,10 +15,13 @@ import {
   deleteAdminUser,
   getAdminUsers,
   type AdminUser,
+  updateAdminUserRole,
 } from "../lib/api";
 
 interface UsersTableProps {
   limit?: number;
+  refreshToken?: number;
+  onUsersChange?: () => void;
 }
 
 function maskDashboardEmail(email: string, role?: string) {
@@ -57,16 +60,22 @@ function formatDate(value?: string) {
   return parsed.toLocaleDateString();
 }
 
-export function UsersTable({ limit }: UsersTableProps) {
+export function UsersTable({
+  limit,
+  refreshToken = 0,
+  onUsersChange,
+}: UsersTableProps) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deletingEmail, setDeletingEmail] = useState("");
+  const [updatingRoleEmail, setUpdatingRoleEmail] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
     const loadUsers = async () => {
+      setLoading(true);
       try {
         const data = await getAdminUsers();
         if (!cancelled) {
@@ -93,7 +102,7 @@ export function UsersTable({ limit }: UsersTableProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken]);
 
   const displayUsers = useMemo(
     () => (limit ? users.slice(0, limit) : users),
@@ -109,6 +118,7 @@ export function UsersTable({ limit }: UsersTableProps) {
     try {
       await deleteAdminUser(email);
       setUsers((current) => current.filter((user) => user.email !== email));
+      onUsersChange?.();
     } catch (deleteError) {
       alert(
         deleteError instanceof ApiError
@@ -117,6 +127,28 @@ export function UsersTable({ limit }: UsersTableProps) {
       );
     } finally {
       setDeletingEmail("");
+    }
+  };
+
+  const handleRoleChange = async (
+    email: string,
+    role: "user" | "mod" | "admin",
+  ) => {
+    setUpdatingRoleEmail(email);
+    try {
+      await updateAdminUserRole(email, role);
+      setUsers((current) =>
+        current.map((user) => (user.email === email ? { ...user, role } : user)),
+      );
+      onUsersChange?.();
+    } catch (updateError) {
+      alert(
+        updateError instanceof ApiError
+          ? updateError.message
+          : "Unable to update the user role right now",
+      );
+    } finally {
+      setUpdatingRoleEmail("");
     }
   };
 
@@ -167,6 +199,8 @@ export function UsersTable({ limit }: UsersTableProps) {
             displayUsers.map((user) => {
               const isVerified = Boolean(user.verified);
               const isDeleting = deletingEmail === user.email;
+              const isUpdatingRole = updatingRoleEmail === user.email;
+              const allowRoleManagement = !limit;
 
               return (
                 <TableRow
@@ -180,12 +214,30 @@ export function UsersTable({ limit }: UsersTableProps) {
                     {maskDashboardEmail(user.email, user.role)}
                   </TableCell>
                   <TableCell>
-                    <Badge
-                      variant={user.role === "admin" ? "default" : "outline"}
-                      className="capitalize"
-                    >
-                      {user.role || "user"}
-                    </Badge>
+                    {allowRoleManagement ? (
+                      <select
+                        value={user.role || "user"}
+                        disabled={isUpdatingRole || isDeleting}
+                        onChange={(event) =>
+                          void handleRoleChange(
+                            user.email,
+                            event.target.value as "user" | "mod" | "admin",
+                          )
+                        }
+                        className="flex h-9 min-w-[112px] rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm capitalize text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white dark:focus:ring-zinc-100"
+                      >
+                        <option value="user">User</option>
+                        <option value="mod">Mod</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    ) : (
+                      <Badge
+                        variant={user.role === "admin" ? "default" : "outline"}
+                        className="capitalize"
+                      >
+                        {user.role || "user"}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge variant={isVerified ? "default" : "secondary"}>
@@ -199,11 +251,11 @@ export function UsersTable({ limit }: UsersTableProps) {
                     <Button
                       variant="ghost"
                       size="icon"
-                      disabled={isDeleting}
+                      disabled={isDeleting || isUpdatingRole}
                       className="text-red-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:hover:bg-red-950/30"
                       onClick={() => handleDelete(user.email)}
                     >
-                      {isDeleting ? (
+                      {isDeleting || isUpdatingRole ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <Trash2 className="h-4 w-4" />

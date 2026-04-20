@@ -58,7 +58,12 @@ async def lifespan(app: FastAPI):
     startup_db_ready = False
     try:
         recommender.log.info("Initialising DB …")
-        recommender.init_db()
+        recommender.init_db(
+            cleanup_stale_posters=_env_flag(
+                "MOVIEBUZZ_STARTUP_CLEANUP_STALE_POSTERS",
+                default=False,
+            )
+        )
         if _auto_load_dataset_on_startup():
             recommender.log.info("Auto-loading MovieLens dataset during startup …")
             recommender.load_ml25m_to_db()
@@ -294,8 +299,16 @@ def home_movies(
     limit: int = Query(default=50, ge=1, le=50),
     genre: Optional[str] = Query(default=None),
     user_email: Optional[str] = Query(default=None),
+    preference_key: Optional[str] = Query(default=None),
 ):
-    return {"results": get_home_movies(limit, genre, user_email=user_email)}
+    return {
+        "results": get_home_movies(
+            limit,
+            genre,
+            user_email=user_email,
+            preference_key=preference_key,
+        )
+    }
 
 
 @app.get("/movies/{movie_id}/details")
@@ -449,6 +462,7 @@ class MovieEntry(BaseModel):
     rating:  Optional[float] = 0.0
     year:    Optional[str]  = ""
     poster:  Optional[str]  = ""
+    youtube_link: Optional[str] = ""
 
 @app.post("/admin/movies/manual")
 def admin_add_manual(movies: List[MovieEntry]):

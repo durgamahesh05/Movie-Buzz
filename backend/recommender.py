@@ -34,7 +34,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
-from config import env  # type: ignore
+from config import env, env_int  # type: ignore
 from db import (  # type: ignore
     DB_BACKEND,
     format_db_target,
@@ -61,6 +61,7 @@ def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
         return default
+    value = value.split("#", 1)[0].strip()
     try:
         return int(value)
     except ValueError:
@@ -140,7 +141,7 @@ OMDB_API_KEY  = (
 # and check your email to activate the key. Free tier = 1000 requests/day.
 _OMDB_KEY_INVALID = False  # reset on each server start so new key is retried
 OMDB_BASE_URL = "https://www.omdbapi.com/"
-OMDB_TIMEOUT  = _env_int("MOVIEBUZZ_OMDB_TIMEOUT", 5)
+OMDB_TIMEOUT = env_int("OMDB_TIMEOUT", "MOVIEBUZZ_OMDB_TIMEOUT", default=5)
 
 # ── TMDB (free public search, no key needed for search endpoint) ───────────────
 TMDB_API_KEY = (
@@ -148,10 +149,10 @@ TMDB_API_KEY = (
 ).strip()
 TMDB_SEARCH_URL  = "https://api.themoviedb.org/3/search/movie"
 TMDB_IMAGE_BASE  = "https://image.tmdb.org/t/p/w500"
-TMDB_TIMEOUT     = _env_int("MOVIEBUZZ_TMDB_TIMEOUT", 5)
+TMDB_TIMEOUT = env_int("TMDB_TIMEOUT", "MOVIEBUZZ_TMDB_TIMEOUT", default=5)
 
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
-ITUNES_TIMEOUT = _env_int("MOVIEBUZZ_ITUNES_TIMEOUT", 4)
+ITUNES_TIMEOUT = env_int("ITUNES_TIMEOUT", "MOVIEBUZZ_ITUNES_TIMEOUT", default=4)
 OMDB_MEMORY_CACHE_TTL_SECONDS = _env_int(
     "MOVIEBUZZ_OMDB_MEMORY_CACHE_TTL_SECONDS",
     60 * 60 * 6,
@@ -164,29 +165,73 @@ OMDB_PREFETCH_BATCH_SIZE = _env_int("MOVIEBUZZ_OMDB_PREFETCH_BATCH_SIZE", 25)
 OMDB_PREFETCH_WORKERS = _env_int("MOVIEBUZZ_OMDB_PREFETCH_WORKERS", 4)
 _OMDB_MEMORY_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 
-# ── Optional deps (graceful fallbacks) ───────────────────────────────────────
-_sentence_transformers = _load_optional_module("sentence_transformers")
-SentenceTransformer = (
-    _sentence_transformers.SentenceTransformer
-    if _sentence_transformers is not None
-    else None
-)
-HAS_SBERT = SentenceTransformer is not None
+# ── Optional deps (graceful fallbacks, lazy to keep API startup fast) ──────────
+SentenceTransformer = None
+HAS_SBERT = False
+_SBERT_RUNTIME_LOADED = False
 
-fuzz_process = _load_optional_module("rapidfuzz.process")
-HAS_RAPIDFUZZ = fuzz_process is not None
+fuzz_process = None
+HAS_RAPIDFUZZ = False
+_RAPIDFUZZ_RUNTIME_LOADED = False
 
-_textblob = _load_optional_module("textblob")
-TextBlob = _textblob.TextBlob if _textblob is not None else None
-HAS_TEXTBLOB = TextBlob is not None
+TextBlob = None
+HAS_TEXTBLOB = False
+_TEXTBLOB_RUNTIME_LOADED = False
 
-implicit = _load_optional_module("implicit")
-HAS_IMPLICIT = implicit is not None
+implicit = None
+HAS_IMPLICIT = False
+_IMPLICIT_RUNTIME_LOADED = False
 
 tf = None
 keras = None
 HAS_TF = False
 _TF_RUNTIME_LOADED = False
+
+
+def _load_sbert_runtime() -> Any | None:
+    global SentenceTransformer, HAS_SBERT, _SBERT_RUNTIME_LOADED
+    if _SBERT_RUNTIME_LOADED:
+        return SentenceTransformer
+
+    _SBERT_RUNTIME_LOADED = True
+    module = _load_optional_module("sentence_transformers")
+    SentenceTransformer = getattr(module, "SentenceTransformer", None) if module is not None else None
+    HAS_SBERT = SentenceTransformer is not None
+    return SentenceTransformer
+
+
+def _load_rapidfuzz_runtime() -> Any | None:
+    global fuzz_process, HAS_RAPIDFUZZ, _RAPIDFUZZ_RUNTIME_LOADED
+    if _RAPIDFUZZ_RUNTIME_LOADED:
+        return fuzz_process
+
+    _RAPIDFUZZ_RUNTIME_LOADED = True
+    fuzz_process = _load_optional_module("rapidfuzz.process")
+    HAS_RAPIDFUZZ = fuzz_process is not None
+    return fuzz_process
+
+
+def _load_textblob_runtime() -> Any | None:
+    global TextBlob, HAS_TEXTBLOB, _TEXTBLOB_RUNTIME_LOADED
+    if _TEXTBLOB_RUNTIME_LOADED:
+        return TextBlob
+
+    _TEXTBLOB_RUNTIME_LOADED = True
+    module = _load_optional_module("textblob")
+    TextBlob = getattr(module, "TextBlob", None) if module is not None else None
+    HAS_TEXTBLOB = TextBlob is not None
+    return TextBlob
+
+
+def _load_implicit_runtime() -> Any | None:
+    global implicit, HAS_IMPLICIT, _IMPLICIT_RUNTIME_LOADED
+    if _IMPLICIT_RUNTIME_LOADED:
+        return implicit
+
+    _IMPLICIT_RUNTIME_LOADED = True
+    implicit = _load_optional_module("implicit")
+    HAS_IMPLICIT = implicit is not None
+    return implicit
 
 
 def _load_tensorflow_runtime() -> tuple[Any | None, Any | None]:
@@ -202,26 +247,65 @@ def _load_tensorflow_runtime() -> tuple[Any | None, Any | None]:
     HAS_TF = tf is not None and keras is not None
     return tf, keras
 
-xgb = _load_optional_module("xgboost")
-HAS_XGB = xgb is not None
+xgb = None
+HAS_XGB = False
+_XGB_RUNTIME_LOADED = False
 
-_matplotlib = _load_optional_module("matplotlib")
 plt = None
 HAS_MATPLOTLIB = False
-if _matplotlib is not None:
+_MATPLOTLIB_RUNTIME_LOADED = False
+
+Dataset = None
+Reader = None
+SVD = None
+HAS_SURPRISE = False
+_SURPRISE_RUNTIME_LOADED = False
+
+
+def _load_xgb_runtime() -> Any | None:
+    global xgb, HAS_XGB, _XGB_RUNTIME_LOADED
+    if _XGB_RUNTIME_LOADED:
+        return xgb
+
+    _XGB_RUNTIME_LOADED = True
+    xgb = _load_optional_module("xgboost")
+    HAS_XGB = xgb is not None
+    return xgb
+
+
+def _load_matplotlib_runtime() -> Any | None:
+    global plt, HAS_MATPLOTLIB, _MATPLOTLIB_RUNTIME_LOADED
+    if _MATPLOTLIB_RUNTIME_LOADED:
+        return plt
+
+    _MATPLOTLIB_RUNTIME_LOADED = True
+    module = _load_optional_module("matplotlib")
+    if module is None:
+        HAS_MATPLOTLIB = False
+        return None
     try:
-        _matplotlib.use("Agg")
+        module.use("Agg")
         plt = importlib.import_module("matplotlib.pyplot")
         HAS_MATPLOTLIB = True
     except Exception as exc:
         log.warning("Optional dependency matplotlib unavailable: %s", exc)
         plt = None
+        HAS_MATPLOTLIB = False
+    return plt
 
-surprise = _load_optional_module("surprise")
-Dataset = getattr(surprise, "Dataset", None)
-Reader = getattr(surprise, "Reader", None)
-SVD = getattr(surprise, "SVD", None)
-HAS_SURPRISE = surprise is not None
+
+def _load_surprise_runtime() -> bool:
+    global Dataset, Reader, SVD, HAS_SURPRISE, _SURPRISE_RUNTIME_LOADED
+    if _SURPRISE_RUNTIME_LOADED:
+        return HAS_SURPRISE
+
+    _SURPRISE_RUNTIME_LOADED = True
+    surprise = _load_optional_module("surprise")
+    Dataset = getattr(surprise, "Dataset", None)
+    Reader = getattr(surprise, "Reader", None)
+    SVD = getattr(surprise, "SVD", None)
+    HAS_SURPRISE = surprise is not None
+    return HAS_SURPRISE
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).parent
@@ -272,6 +356,7 @@ HOME_POSTER_HYDRATE_LIMIT = _env_int("MOVIEBUZZ_HOME_POSTER_HYDRATE_LIMIT", 24)
 _HOME_MOVIES_CACHE: dict[str, dict[str, Any]] = {}
 _CURATED_CATALOG_CACHE: list[dict[str, Any]] = []
 _LIGHTWEIGHT_TITLE_CATALOG_CACHE: list[dict[str, Any]] = []
+_ADMIN_CATALOG_GENRES_CACHE: list[str] = []
 LEGACY_XGB_FEATURE_COLUMNS = [
     "avg_rating",
     "svd_score",
@@ -329,6 +414,7 @@ class XGBModelBundle:
 
 
 def _new_xgb_estimator(model_kind: str) -> Any | None:
+    _load_xgb_runtime()
     if not HAS_XGB or xgb is None:
         return None
     if model_kind == "rank:ndcg":
@@ -344,6 +430,8 @@ def _load_xgb_artifacts() -> Any | None:
         except Exception as exc:
             log.warning("Could not load legacy XGBoost pickle: %s", exc)
 
+    if XGB_JSON_PATH.exists() and XGB_META_PATH.exists():
+        _load_xgb_runtime()
     if XGB_JSON_PATH.exists() and XGB_META_PATH.exists() and HAS_XGB and xgb is not None:
         try:
             with open(XGB_META_PATH, "rb") as f:
@@ -1342,9 +1430,11 @@ def _best_effort_reset_collection(collection_name: str) -> bool:
         return False
 
 
-def init_db():
+def init_db(*, cleanup_stale_posters: bool = True):
     get_db().ensure_indexes()
     log.info("DB ready: %s", DB_PATH)
+    if not cleanup_stale_posters:
+        return
     get_collection("movies").update_many(
         {
             "poster": {
@@ -1532,17 +1622,17 @@ def load_ml25m_to_db(
                         exc,
                     )
 
-            if HAS_TEXTBLOB:
-                assert TextBlob is not None
+            textblob_cls = _load_textblob_runtime()
+            if textblob_cls is not None:
                 grouped = chunk.groupby("movieId")["tag"].agg(list)
                 for mid, tags in grouped.items():
                     text = " ".join(tags)
                     weight = len(tags)
-                    polarity = TextBlob(text).sentiment.polarity
+                    polarity = textblob_cls(text).sentiment.polarity
                     sentiment_sum[mid] = sentiment_sum.get(int(mid), 0.0) + polarity * weight
                     sentiment_count[mid] = sentiment_count.get(int(mid), 0) + weight
 
-        if HAS_TEXTBLOB and sentiment_sum:
+        if _load_textblob_runtime() is not None and sentiment_sum:
             sentiment_df = pd.DataFrame(
                 {
                     "movieId": list(sentiment_sum.keys()),
@@ -1615,6 +1705,8 @@ def load_ml25m_to_db(
     if movie_docs:
         movies_collection.delete_many({})
         _insert_many_in_batches("movies", movie_docs)
+        _LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
+        _ADMIN_CATALOG_GENRES_CACHE.clear()
     log.info(
         "MovieLens subset import done – %d movies, %d ratings",
         len(movies_df),
@@ -2186,17 +2278,17 @@ class RecommenderEngine:
 
     # ── SBERT ─────────────────────────────────────────────────────────────────
     def _build_sbert(self):
-        if not HAS_SBERT:
-            return
         if SBERT_CACHE.exists() and SBERT_IDX.exists():
             self.sbert_embeddings = np.load(str(SBERT_CACHE))
             with open(SBERT_IDX, "rb") as f:
                 if len(pickle.load(f)) == len(self.movies_df):
                     log.info("SBERT loaded from cache")
                     return
+        sentence_transformer_cls = _load_sbert_runtime()
+        if sentence_transformer_cls is None:
+            return
         log.info("Encoding SBERT embeddings …")
-        assert SentenceTransformer is not None
-        model = SentenceTransformer(SBERT_MODEL)
+        model = sentence_transformer_cls(SBERT_MODEL)
         texts = (
             self.movies_df["genres"].fillna("") + ". "
             + self.movies_df["tag_text"].fillna("") + ". "
@@ -2245,7 +2337,7 @@ class RecommenderEngine:
 
     # ── SVD ───────────────────────────────────────────────────────────────────
     def _load_or_train_svd(self):
-        if not HAS_SURPRISE:
+        if not _load_surprise_runtime():
             return
         assert Reader is not None and Dataset is not None and SVD is not None
         if SVD_PATH.exists():
@@ -2287,6 +2379,7 @@ class RecommenderEngine:
 
     # ── ALS ───────────────────────────────────────────────────────────────────
     def _load_or_train_als(self):
+        _load_implicit_runtime()
         if not HAS_IMPLICIT:
             return
         assert implicit is not None
@@ -2433,6 +2526,7 @@ class RecommenderEngine:
 
     # ── XGBoost re-ranker ─────────────────────────────────────────────────────
     def _load_or_train_xgb(self):
+        _load_xgb_runtime()
         if not HAS_XGB:
             log.info("XGBoost not installed – re-ranker skipped")
             return
@@ -2813,8 +2907,9 @@ class RecommenderEngine:
                     .sort_values("avg_rating", ascending=False)
                     .iloc[0]["title"])
         all_titles = self.movies_df["_search_title"].tolist()
-        if HAS_RAPIDFUZZ and fuzz_process is not None:
-            m = fuzz_process.extractOne(q, all_titles, score_cutoff=62)
+        rapidfuzz_process = _load_rapidfuzz_runtime()
+        if rapidfuzz_process is not None:
+            m = rapidfuzz_process.extractOne(q, all_titles, score_cutoff=62)
             matched_lower = m[0] if m else None
         else:
             ms = get_close_matches(q, all_titles, n=1, cutoff=0.58)
@@ -3174,38 +3269,56 @@ class RecommenderEngine:
     @staticmethod
     def _fetch_omdb(clean_title: str, year: str) -> dict:
         global _OMDB_KEY_INVALID
-        # Build the best possible fallback poster: TMDB > iTunes > generated SVG
-        tmdb_poster = _fetch_tmdb_poster(clean_title, year)
-        itunes_poster = _fetch_itunes_poster(clean_title, year) if not tmdb_poster else ""
-        fallback_poster = tmdb_poster or itunes_poster or _generated_poster_url(clean_title, year)
-        FALLBACK = {
-            "poster": fallback_poster,
-            "plot": _fallback_movie_description(clean_title, year),
-            "cast": "",
-            "director": "",
-            "imdb_rating": "",
-            "runtime": "",
-        }
         cache_key = f"{clean_title}|{year}"
+        fallback_poster = ""
+
+        def _fallback_poster() -> str:
+            nonlocal fallback_poster
+            if not fallback_poster:
+                tmdb_poster = _fetch_tmdb_poster(clean_title, year)
+                itunes_poster = _fetch_itunes_poster(clean_title, year) if not tmdb_poster else ""
+                fallback_poster = tmdb_poster or itunes_poster or _generated_poster_url(clean_title, year)
+            return fallback_poster
+
+        def _fallback_payload() -> dict[str, str]:
+            return {
+                "poster": _fallback_poster(),
+                "plot": _fallback_movie_description(clean_title, year),
+                "cast": "",
+                "director": "",
+                "imdb_rating": "",
+                "imdb_id": "",
+                "runtime": "",
+            }
+
         cached = _omdb_cache_get(cache_key)
         if cached is not None:
             # Upgrade stale placeholder poster in cached entry
             if _is_missing_poster(cached.get("poster", "")):
-                cached["poster"] = fallback_poster
+                cached["poster"] = _fallback_poster()
             return cached
         try:
             row = get_collection("omdb_cache").find_one({"title": cache_key})
             if row:
-                result = {k: row.get(k) or FALLBACK.get(k, "") for k in FALLBACK}
+                result = {
+                    "poster": str(row.get("poster") or ""),
+                    "plot": str(row.get("plot") or _fallback_movie_description(clean_title, year)),
+                    "cast": str(row.get("cast") or ""),
+                    "director": str(row.get("director") or ""),
+                    "imdb_rating": str(row.get("imdb_rating") or ""),
+                    "imdb_id": str(row.get("imdb_id") or ""),
+                    "runtime": str(row.get("runtime") or ""),
+                }
                 if _is_missing_poster(result.get("poster", "")):
-                    result["poster"] = fallback_poster
+                    result["poster"] = _fallback_poster()
                 _omdb_cache_set(cache_key, result)
                 return result
         except Exception:
             pass
         if not OMDB_API_KEY or _OMDB_KEY_INVALID:
-            _omdb_cache_set(cache_key, FALLBACK)
-            return dict(FALLBACK)
+            fallback = _fallback_payload()
+            _omdb_cache_set(cache_key, fallback)
+            return dict(fallback)
         params = {"apikey": OMDB_API_KEY, "t": clean_title, "type": "movie"}
         if year:
             params["y"] = year
@@ -3218,31 +3331,35 @@ class RecommenderEngine:
                     log.warning(
                         "OMDb rejected the configured API key. Poster fetches will use the iTunes/neutral fallback until the key is updated."
                     )
-                    _omdb_cache_set(cache_key, FALLBACK)
-                    return dict(FALLBACK)
+                    fallback = _fallback_payload()
+                    _omdb_cache_set(cache_key, fallback)
+                    return dict(fallback)
                 data = requests.get(OMDB_BASE_URL,
                     params={"apikey": OMDB_API_KEY, "t": clean_title,
                             "type": "movie"}, timeout=OMDB_TIMEOUT).json()
         except Exception:
-            _omdb_cache_set(cache_key, FALLBACK)
-            return dict(FALLBACK)
+            fallback = _fallback_payload()
+            _omdb_cache_set(cache_key, fallback)
+            return dict(fallback)
         if data.get("Response") != "True":
-            _omdb_cache_set(cache_key, FALLBACK)
-            return dict(FALLBACK)
+            fallback = _fallback_payload()
+            _omdb_cache_set(cache_key, fallback)
+            return dict(fallback)
 
         def v(k):
             val = data.get(k, "")
             return "" if val == "N/A" else val
 
-        result = {"poster":      v("Poster") or fallback_poster,
+        result = {"poster":      v("Poster") or _fallback_poster(),
                   "plot":        v("Plot"),
                   "cast":        v("Actors"),
                   "director":    v("Director"),
                   "imdb_rating": v("imdbRating"),
+                  "imdb_id":     v("imdbID"),
                   "runtime":     v("Runtime")}
         # OMDB sometimes returns "N/A" as Poster — upgrade with TMDB/iTunes
         if _is_missing_poster(result["poster"]):
-            result["poster"] = fallback_poster
+            result["poster"] = _fallback_poster()
         try:
             get_collection("omdb_cache").update_one(
                 {"title": cache_key},
@@ -3254,6 +3371,7 @@ class RecommenderEngine:
                         "cast": result["cast"],
                         "director": result["director"],
                         "imdb_rating": result["imdb_rating"],
+                        "imdb_id": result["imdb_id"],
                         "runtime": result["runtime"],
                         "fetched_at": _utc_now().isoformat(),
                     }
@@ -3448,6 +3566,51 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _admin_movie_row_payload(row: dict[str, Any]) -> dict[str, Any]:
+    title = str(row.get("title") or "").strip()
+    clean_title = str(row.get("clean_title") or "").strip()
+    year = str(row.get("year") or "").strip()
+    if not clean_title or not year:
+        fallback_clean_title, fallback_year = _clean_title(title)
+        clean_title = clean_title or fallback_clean_title or title
+        year = year or fallback_year
+
+    resolved_movie_id: int | None = None
+    movie_id = row.get("movieId")
+    try:
+        if movie_id is not None and not pd.isna(movie_id):
+            resolved_movie_id = int(movie_id)
+    except Exception:
+        resolved_movie_id = None
+
+    rating: float | str = "N/A"
+    numeric_rating = _safe_float(row.get("avg_rating"))
+    if numeric_rating > 0:
+        rating = round(numeric_rating, 1)
+
+    imdb_rating = str(row.get("imdb_rating") or "").strip()
+    if not imdb_rating and rating != "N/A":
+        imdb_rating = str(rating)
+
+    source = str(row.get("source") or "").strip().lower() or "catalog"
+    resolved_title = title or clean_title
+
+    return {
+        "movie_key": _movie_key(clean_title or resolved_title, year),
+        "movie_id": resolved_movie_id,
+        "title": resolved_title,
+        "clean_title": clean_title or resolved_title,
+        "year": year,
+        "genres": str(row.get("genres") or "").strip(),
+        "imdb_rating": imdb_rating,
+        "rating": rating,
+        "trending_score": round(_safe_float(row.get("trending_score")), 3),
+        "source": source,
+        "source_label": "Admin" if source == "admin" else "Catalog",
+        "can_delete": source == "admin",
+    }
+
+
 def _movie_search_candidate(
     title: str,
     genres: str = "",
@@ -3459,6 +3622,12 @@ def _movie_search_candidate(
     source: str = "",
     description: str = "",
     plot: str = "",
+    cast: str = "",
+    director: str = "",
+    imdb_rating: str = "",
+    imdb_id: str = "",
+    runtime: str = "",
+    youtube_link: str = "",
 ) -> dict[str, Any]:
     clean_title, year = _clean_title(title)
     resolved_movie_id: int | None = None
@@ -3489,6 +3658,12 @@ def _movie_search_candidate(
         "poster": str(poster or "").strip(),
         "description": str(description or "").strip(),
         "plot": str(plot or description or "").strip(),
+        "cast": str(cast or "").strip(),
+        "director": str(director or "").strip(),
+        "imdb_rating": str(imdb_rating or "").strip(),
+        "imdb_id": str(imdb_id or "").strip(),
+        "runtime": str(runtime or "").strip(),
+        "youtube_link": str(youtube_link or "").strip(),
         "rating": _safe_float(avg_rating),
         "num_ratings": int(num_ratings or 0),
         "trending_score": _safe_float(trending_score),
@@ -3511,6 +3686,19 @@ def _candidate_to_movie_payload(candidate: dict[str, Any]) -> dict[str, Any]:
         movie_id=candidate.get("movie_id"),
         poster_override=str(candidate.get("poster") or ""),
     )
+    for field in (
+        "description",
+        "plot",
+        "cast",
+        "director",
+        "runtime",
+        "youtube_link",
+        "imdb_rating",
+        "imdb_id",
+    ):
+        value = str(candidate.get(field) or "").strip()
+        if value:
+            payload[field] = value
     source = str(candidate.get("source") or "").strip()
     if source:
         payload["source"] = source
@@ -3527,6 +3715,14 @@ def _row_to_movie_candidate(row: Any) -> dict[str, Any]:
         movie_id=row["movieId"],
         poster=str(row["poster"] or ""),
         source=str(row["source"] or "") if "source" in row.keys() else "",
+        description=str(row["description"] or "") if "description" in row.keys() else "",
+        plot=str(row["plot"] or "") if "plot" in row.keys() else "",
+        cast=str(row["cast"] or "") if "cast" in row.keys() else "",
+        director=str(row["director"] or "") if "director" in row.keys() else "",
+        imdb_rating=str(row["imdb_rating"] or "") if "imdb_rating" in row.keys() else "",
+        imdb_id=str(row["imdb_id"] or "") if "imdb_id" in row.keys() else "",
+        runtime=str(row["runtime"] or "") if "runtime" in row.keys() else "",
+        youtube_link=str(row["youtube_link"] or "") if "youtube_link" in row.keys() else "",
     )
 
 
@@ -3785,6 +3981,14 @@ def _lightweight_catalog_movies() -> list[dict[str, Any]]:
                         "trending_score": 1,
                         "poster": 1,
                         "source": 1,
+                        "description": 1,
+                        "plot": 1,
+                        "cast": 1,
+                        "director": 1,
+                        "imdb_rating": 1,
+                        "imdb_id": 1,
+                        "runtime": 1,
+                        "youtube_link": 1,
                     },
                 )
             )
@@ -3802,6 +4006,14 @@ def _lightweight_catalog_movies() -> list[dict[str, Any]]:
                 movie_id=row.get("movieId"),
                 poster=str(row.get("poster") or ""),
                 source=str(row.get("source") or "catalog"),
+                description=str(row.get("description") or ""),
+                plot=str(row.get("plot") or ""),
+                cast=str(row.get("cast") or ""),
+                director=str(row.get("director") or ""),
+                imdb_rating=str(row.get("imdb_rating") or ""),
+                imdb_id=str(row.get("imdb_id") or ""),
+                runtime=str(row.get("runtime") or ""),
+                youtube_link=str(row.get("youtube_link") or ""),
             )
             for row in rows
             if str(row.get("title") or "").strip()
@@ -3899,7 +4111,7 @@ def _hydrate_movie_payload(movie: dict[str, Any]) -> dict[str, Any]:
     if _is_generated_poster(poster) or _is_missing_poster(poster):
         poster_override = ""
 
-    return _movie_payload(
+    payload = _movie_payload(
         title=title or clean_title,
         clean_title=clean_title or title,
         year=year,
@@ -3909,6 +4121,20 @@ def _hydrate_movie_payload(movie: dict[str, Any]) -> dict[str, Any]:
         movie_id=movie.get("movie_id"),
         poster_override=poster_override,
     )
+    for field in (
+        "description",
+        "plot",
+        "cast",
+        "director",
+        "runtime",
+        "youtube_link",
+        "imdb_rating",
+        "imdb_id",
+    ):
+        value = str(movie.get(field) or "").strip()
+        if value:
+            payload[field] = value
+    return payload
 
 
 def _hydrate_visible_movie_posters(
@@ -4049,6 +4275,49 @@ def _recommend_from_curated_catalog(
     }
 
 
+def _user_feedback_movie_ids(user_id: Optional[str]) -> tuple[set[int], set[int]]:
+    normalized_user_id = str(user_id or "").strip().lower()
+    if not normalized_user_id:
+        return set(), set()
+
+    liked: set[int] = set()
+    disliked: set[int] = set()
+
+    try:
+        rows = get_collection("user_feedback").find(
+            {"user_id": normalized_user_id},
+            {"_id": 0, "movieId": 1, "feedback": 1, "rating": 1},
+        )
+        for row in rows:
+            try:
+                resolved_movie_id = int(row.get("movieId"))
+            except Exception:
+                continue
+
+            feedback_value = str(row.get("feedback") or "").strip().lower()
+            try:
+                resolved_rating = (
+                    int(row.get("rating"))
+                    if row.get("rating") not in (None, "")
+                    else None
+                )
+            except Exception:
+                resolved_rating = None
+
+            if feedback_value == "like" or (
+                resolved_rating is not None and resolved_rating >= 4
+            ):
+                liked.add(resolved_movie_id)
+            elif feedback_value == "dislike" or (
+                resolved_rating is not None and resolved_rating <= 2
+            ):
+                disliked.add(resolved_movie_id)
+    except Exception as exc:
+        log.debug("Lightweight feedback lookup failed for %s: %s", normalized_user_id, exc)
+
+    return liked, disliked
+
+
 def _recommend_from_database(
     title: str,
     top_n: int = 50,
@@ -4075,6 +4344,7 @@ def _recommend_from_database(
         }
         anchor_key = str(anchor.get("movie_key") or "")
         anchor_year = str(anchor.get("year") or "")
+        liked_movie_ids, disliked_movie_ids = _user_feedback_movie_ids(user_email)
 
         candidate_pool = _lightweight_catalog_movies()
         if preference_context is not None:
@@ -4094,8 +4364,6 @@ def _recommend_from_database(
                 for token in _normalize_search_text(str(movie.get("genres") or "")).split()
                 if len(token) > 2
             }
-            if anchor_genres and not (anchor_genres & movie_genres):
-                continue
 
             movie_tokens = _meaningful_title_tokens(
                 str(movie.get("clean_title") or movie.get("title") or "")
@@ -4106,6 +4374,16 @@ def _recommend_from_database(
                 40 if anchor_tokens and shared_title_tokens == len(anchor_tokens) else 0
             )
             mood_bonus = 10 if mood_genres & movie_genres else 0
+            try:
+                resolved_movie_id = int(movie.get("movie_id"))
+            except Exception:
+                resolved_movie_id = None
+            feedback_boost = 0.0
+            if resolved_movie_id is not None:
+                if resolved_movie_id in liked_movie_ids:
+                    feedback_boost = 18.0
+                elif resolved_movie_id in disliked_movie_ids:
+                    feedback_boost = -24.0
 
             same_era = 0
             movie_year = str(movie.get("year") or "")
@@ -4118,6 +4396,7 @@ def _recommend_from_database(
                 + full_title_match_bonus
                 + mood_bonus
                 + same_era
+                + feedback_boost
                 + float(movie.get("rating") or 0)
                 + float(movie.get("trending_score") or 0) * 8.0
             )
@@ -4337,7 +4616,8 @@ def render_model_metrics_plot(kind: str, theme: str = "light") -> bytes | None:
         normalized_kind = "availability"
     if normalized_kind not in {"comparison", "loss", "availability"}:
         return None
-    if not HAS_MATPLOTLIB or plt is None:
+    plotter = _load_matplotlib_runtime()
+    if plotter is None:
         return None
 
     metrics = get_model_metrics()
@@ -4531,11 +4811,26 @@ def save_movie_rating(user_id: str, movie_id: int, rating: int) -> bool:
         log.error("Rating save error: %s", exc)
         return False
 
+
+def _next_admin_movie_id(existing_ids: set[int]) -> int:
+    latest_admin = get_collection("movies").find_one(
+        {"movieId": {"$lt": 0}},
+        {"_id": 0, "movieId": 1},
+        sort=[("movieId", 1)],
+    )
+    candidate = int(latest_admin.get("movieId") or -1) if latest_admin else -1
+    candidate -= 1
+    while candidate in existing_ids:
+        candidate -= 1
+    return candidate
+
+
 def add_movies_to_db(movies_list: list) -> int:
     if not movies_list:
         return 0
     rows = []
-    for i, m in enumerate(movies_list):
+    reserved_movie_ids: set[int] = set()
+    for m in movies_list:
         title = str(m.get("title", "")).strip()
         if not title:
             continue
@@ -4545,6 +4840,7 @@ def add_movies_to_db(movies_list: list) -> int:
         resolved_year = parsed_year or year
         genres = str(m.get("genres", "")).strip().replace("|", " ")
         poster_override = str(m.get("poster", "")).strip()
+        youtube_link_override = str(m.get("youtube_link", "")).strip()
         try:
             avg_r = float(m.get("rating", 0) or 0)
         except Exception:
@@ -4559,22 +4855,47 @@ def add_movies_to_db(movies_list: list) -> int:
         if _is_missing_poster(resolved_poster):
             resolved_poster = _generated_poster_url(clean_title or title, resolved_year, genres)
 
+        plot = str(omdb_payload.get("plot") or "").strip()
+        description = plot or _fallback_movie_description(clean_title or title, resolved_year, genres)
+        imdb_rating = str(omdb_payload.get("imdb_rating") or "").strip()
+        runtime = str(omdb_payload.get("runtime") or "").strip()
+        director = str(omdb_payload.get("director") or "").strip()
+        cast = str(omdb_payload.get("cast") or "").strip()
+        imdb_id = str(omdb_payload.get("imdb_id") or "").strip()
+        created_at = _utc_now().isoformat()
+        movie_id = _next_admin_movie_id(reserved_movie_ids)
+        reserved_movie_ids.add(movie_id)
+
         rows.append({
-            "movieId":          -(i + 1 + int(pd.Timestamp.now().timestamp())),
+            "movieId":          movie_id,
+            "movie_key":        _movie_key(clean_title or title, resolved_year),
             "title":            normalized_title,
+            "clean_title":      clean_title or title,
+            "year":             resolved_year,
             "genres":           genres,
             "avg_rating":       avg_r,
-            "num_ratings":      1,
+            "num_ratings":      1 if avg_r > 0 else 0,
             "sentiment_score":  0.0,
             "trending_score":   0.0,
             "poster":           resolved_poster,
+            "description":      description,
+            "plot":             plot or description,
+            "cast":             cast,
+            "director":         director,
+            "imdb_rating":      imdb_rating or (str(avg_r) if avg_r > 0 else ""),
+            "imdb_id":          imdb_id,
+            "runtime":          runtime,
+            "youtube_link":     youtube_link_override or _youtube_link(clean_title or title, resolved_year),
             "source":           "admin",
+            "created_at":       created_at,
+            "updated_at":       created_at,
         })
     if not rows:
         return 0
     get_collection("movies").insert_many(rows, ordered=False)
     _HOME_MOVIES_CACHE.clear()
     _LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
+    _ADMIN_CATALOG_GENRES_CACHE.clear()
     RecommenderEngine.reset()
     return len(rows)
 
@@ -4618,7 +4939,29 @@ def _admin_catalog_filters(
 
 
 def _admin_catalog_genres() -> list[str]:
+    global _ADMIN_CATALOG_GENRES_CACHE
+    if _ADMIN_CATALOG_GENRES_CACHE:
+        return list(_ADMIN_CATALOG_GENRES_CACHE)
+
     genres: set[str] = set()
+    if DB_BACKEND == "mongodb":
+        try:
+            raw_values = get_collection("movies").distinct("genres")
+        except Exception as exc:
+            log.warning("Admin genre lookup failed: %s", exc)
+        else:
+            for raw_value in raw_values:
+                normalized_value = str(raw_value or "")
+                if "no genres listed" in normalized_value.lower():
+                    continue
+                for genre_value in normalized_value.replace("|", " ").replace(",", " ").split():
+                    cleaned = genre_value.strip()
+                    if cleaned:
+                        genres.add(cleaned)
+
+            _ADMIN_CATALOG_GENRES_CACHE = sorted(genres)
+            return list(_ADMIN_CATALOG_GENRES_CACHE)
+
     for movie in _lightweight_catalog_movies():
         raw_value = str(movie.get("genres") or "")
         if "no genres listed" in raw_value.lower():
@@ -4628,7 +4971,40 @@ def _admin_catalog_genres() -> list[str]:
             if cleaned:
                 genres.add(cleaned)
 
-    return sorted(genres)
+    _ADMIN_CATALOG_GENRES_CACHE = sorted(genres)
+    return list(_ADMIN_CATALOG_GENRES_CACHE)
+
+
+def _admin_catalog_match_query(
+    search: Optional[str] = None,
+    genre: Optional[str] = None,
+) -> dict[str, Any]:
+    clauses: list[dict[str, Any]] = []
+    search_tokens = [token for token in _normalize_search_text(search or "").split() if token]
+    genre_tokens = [token for token in _normalize_search_text(genre or "").split() if token]
+
+    for token in search_tokens:
+        pattern = re.compile(re.escape(token), re.IGNORECASE)
+        clauses.append(
+            {
+                "$or": [
+                    {"title": pattern},
+                    {"clean_title": pattern},
+                    {"genres": pattern},
+                    {"year": pattern},
+                ]
+            }
+        )
+
+    for token in genre_tokens:
+        pattern = re.compile(re.escape(token), re.IGNORECASE)
+        clauses.append({"genres": pattern})
+
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
 
 
 def list_admin_movies(
@@ -4640,9 +5016,79 @@ def list_admin_movies(
     if DB_BACKEND == "mongodb":
         safe_offset = max(0, int(offset or 0))
         safe_limit = None if limit is None else max(1, int(limit))
+        match_query = _admin_catalog_match_query(search=search, genre=genre)
+        collection = get_collection("movies")
+        source_is_admin = {
+            "$eq": [{"$toLower": {"$ifNull": ["$source", ""]}}, "admin"]
+        }
+        pipeline: list[dict[str, Any]] = []
+        if match_query:
+            pipeline.append({"$match": match_query})
+        pipeline.extend(
+            [
+                {
+                    "$addFields": {
+                        "_admin_source_rank": {"$cond": [source_is_admin, 0, 1]},
+                        "_admin_movie_sort": {
+                            "$cond": [
+                                source_is_admin,
+                                {"$ifNull": ["$movieId", 0]},
+                                {"$multiply": [-1, {"$ifNull": ["$movieId", 0]}]},
+                            ]
+                        },
+                    }
+                },
+                {
+                    "$sort": {
+                        "_admin_source_rank": 1,
+                        "_admin_movie_sort": 1,
+                        "avg_rating": -1,
+                        "title": 1,
+                        "movieId": 1,
+                    }
+                },
+            ]
+        )
+        if safe_offset:
+            pipeline.append({"$skip": safe_offset})
+        if safe_limit is not None:
+            pipeline.append({"$limit": safe_limit})
+        pipeline.append(
+            {
+                "$project": {
+                    "_id": 0,
+                    "movieId": 1,
+                    "title": 1,
+                    "clean_title": 1,
+                    "year": 1,
+                    "genres": 1,
+                    "avg_rating": 1,
+                    "trending_score": 1,
+                    "imdb_rating": 1,
+                    "source": 1,
+                }
+            }
+        )
+
+        try:
+            total = collection.count_documents(match_query)
+            rows = list(collection.aggregate(pipeline))
+        except Exception as exc:
+            log.warning("Admin movie query failed, falling back to cached scan: %s", exc)
+        else:
+            items = [_admin_movie_row_payload(row) for row in rows]
+
+            return {
+                "items": items,
+                "total": total,
+                "limit": safe_limit if safe_limit is not None else total,
+                "offset": safe_offset,
+                "genres": _admin_catalog_genres(),
+                "has_more": (safe_offset + len(items)) < total,
+            }
+
         search_tokens = [token for token in _normalize_search_text(search or "").split() if token]
         genre_tokens = [token for token in _normalize_search_text(genre or "").split() if token]
-
         filtered: list[dict[str, Any]] = []
         for movie in _lightweight_catalog_movies():
             haystack = _normalize_search_text(
@@ -4675,7 +5121,11 @@ def list_admin_movies(
             )
         )
         total = len(filtered)
-        page = filtered[safe_offset:] if safe_limit is None else filtered[safe_offset : safe_offset + safe_limit]
+        page = (
+            filtered[safe_offset:]
+            if safe_limit is None
+            else filtered[safe_offset : safe_offset + safe_limit]
+        )
 
         items: list[dict[str, Any]] = []
         for movie in page:
@@ -4728,6 +5178,7 @@ def delete_movie_from_db(movie_id: int) -> bool:
 
     _HOME_MOVIES_CACHE.clear()
     _LIGHTWEIGHT_TITLE_CATALOG_CACHE.clear()
+    _ADMIN_CATALOG_GENRES_CACHE.clear()
     RecommenderEngine.reset()
     return True
 
@@ -4736,11 +5187,16 @@ def get_home_movies(
     limit: int = 50,
     genre: Optional[str] = None,
     user_email: Optional[str] = None,
+    preference_key: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     now = _utc_now().timestamp()
     normalized_genre = _normalize_search_text(genre or "")
     normalized_user = _normalize_search_text(user_email or "")
-    cache_key = f"{normalized_genre or 'all'}::{limit}::{normalized_user or 'anon'}"
+    normalized_preference_key = _normalize_search_text(preference_key or "")
+    cache_key = (
+        f"{normalized_genre or 'all'}::{limit}::{normalized_user or 'anon'}::"
+        f"{normalized_preference_key or 'default'}"
+    )
     cached_entry = _HOME_MOVIES_CACHE.get(cache_key, {})
     cached_results = cached_entry.get("results", [])
     if cached_results and now < float(cached_entry.get("expires_at", 0)):
@@ -4835,6 +5291,14 @@ def get_movie_details(
                 "trending_score": 1,
                 "poster": 1,
                 "source": 1,
+                "description": 1,
+                "plot": 1,
+                "cast": 1,
+                "director": 1,
+                "imdb_rating": 1,
+                "imdb_id": 1,
+                "runtime": 1,
+                "youtube_link": 1,
             },
         )
         if row is None:

@@ -229,7 +229,7 @@ def read_collection_df(
         requested_columns = [
             key for key, value in (projection or {}).items() if key != "_id" and value
         ]
-        return pd.DataFrame(columns=requested_columns)
+        return pd.DataFrame(columns=requested_columns)  # type: ignore
     return _documents_to_df(rows)
 
 

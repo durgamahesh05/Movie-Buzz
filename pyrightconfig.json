@@ -24,10 +24,8 @@
       ]
     }
   ],
-  "diagnosticSeverityOverrides": {
-    "reportOptionalSubscript": "none",
-    "reportGeneralTypeIssues": "warning",
-    "reportOptionalMemberAccess": "warning",
-    "reportAttributeAccessIssue": "warning"
-  }
+  "reportOptionalSubscript": "none",
+  "reportGeneralTypeIssues": "warning",
+  "reportOptionalMemberAccess": "warning",
+  "reportAttributeAccessIssue": "warning"
 }
